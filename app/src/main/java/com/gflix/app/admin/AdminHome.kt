@@ -85,7 +85,7 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
     }.collectAsState(initial = emptyMap())
 
     val ia = state?.archive == true
-    val pc = com.gflix.app.data.PcServer.configured && !ia
+    val pc = com.gflix.app.data.PcServer.configured
     LaunchedEffect(state?.ready) {
         // Yeni düzen: bilgisayar bağlıyken GitHub'a hiç sorulmaz
         while (state?.ready == true && !pc && !ia) {
@@ -95,11 +95,6 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
     }
 
     val s = state ?: return
-    if (!s.ready && !pc) {
-        AdminSettingsScreen(onBack = onBack, firstTime = true)
-        return
-    }
-
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         AdminTopBar("G-Flix Stüdyo", onBack) {
             IconButton(onClick = { scope.launch { if (!pc && !ia) runCatching { repo.refreshServerStatus() }; context.appContainer.catalogRepository.refresh() } }) {
@@ -113,7 +108,12 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                 item { NewsCard() }
                 item { PendingCard() }
                 item { DeadLinksCard() }
-                item {
+            } else item {
+                Hint("🖥️ Bilgisayar bağlantısı kurulmadı. Profil → Bilgisayar bağlantısı bölümünden eşleştir. " +
+                    "İstek listesi ve sayfa araçlarına buradan erişebilirsin; indirme ve arşivleme için bilgisayar gerekir.")
+                Spacer(Modifier.height(12.dp))
+            }
+            item {
                     Button(
                         onClick = onCapture, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(4.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = GColors.Red, contentColor = Color.White),
@@ -132,34 +132,10 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333), contentColor = Color.White),
                     ) { Text("🖥️  Canlı Kayıt  ·  Bilgisayarda akan bütün satırlar", fontWeight = FontWeight.Bold, fontSize = 14.sp) }
                     Spacer(Modifier.height(6.dp))
-                    Hint("İstek listesinde indirme modu açıksa izinli videolar bilgisayara indirilir, archive.org'a yüklenir ve doğrulanınca kataloğa eklenir. " +
-                        "Arşivleme kapalıysa eski anlık yayın sistemi kullanılabilir. Yanlış fragmanı ⚑ ile düzelt.")
-                }
+                    Hint("İstek listesindeki izinli, DRM korumasız videolar bilgisayara indirilir, archive.org'a yüklenir ve doğrulandıktan sonra kataloğa eklenir. " +
+                        "İndirme için bilgisayarda arşivleme ayarı açık olmalıdır.")
             }
             if (!pc) catalog?.stats?.let { st -> item { ArchiveStats(st); Spacer(Modifier.height(12.dp)) } }
-            // archive.org ayarları varsa da eski Stüdyo'daki bilgisayar ve istek listesi araçları kaybolmasın.
-            if (ia && com.gflix.app.data.PcServer.configured) item {
-                PcStatsCard()
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = onCapture, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(4.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = GColors.Red, contentColor = Color.White),
-                ) { Text("🌐  Sayfadan Yakala  ·  Kaynağı aç / yenile", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
-                Spacer(Modifier.height(8.dp))
-                WishHomeButton()
-                Spacer(Modifier.height(8.dp))
-                ArchiveJobsCard()
-                Spacer(Modifier.height(8.dp))
-                YtFollowButton()
-                Spacer(Modifier.height(8.dp))
-                AddLinkButton()
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onLog, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(4.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333), contentColor = Color.White),
-                ) { Text("🖥️  Canlı Kayıt  ·  Bilgisayarda akan bütün satırlar", fontWeight = FontWeight.Bold, fontSize = 14.sp) }
-                Spacer(Modifier.height(12.dp))
-            }
             if (ia) item {
                 Button(
                     onClick = onUpload, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(4.dp),
@@ -191,10 +167,10 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                 s.iaCatalogNote?.let { Hint(it, Modifier.padding(top = 4.dp)) }
                 Spacer(Modifier.height(12.dp))
             }
-            if (!pc && !ia) item { RateLimitCard(repo); Spacer(Modifier.height(12.dp)) }
-            if (!pc && !ia) item { JobStatsCard(repo); Spacer(Modifier.height(12.dp)) }
-            if (!pc && !ia) item { SiteJobsCard(repo); Spacer(Modifier.height(12.dp)) }
-            if (!pc && !ia) item {
+            if (!pc && !ia && s.ready) item { RateLimitCard(repo); Spacer(Modifier.height(12.dp)) }
+            if (!pc && !ia && s.ready) item { JobStatsCard(repo); Spacer(Modifier.height(12.dp)) }
+            if (!pc && !ia && s.ready) item { SiteJobsCard(repo); Spacer(Modifier.height(12.dp)) }
+            if (!pc && !ia && s.ready) item {
                 Button(
                     onClick = onUpload, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = GColors.Red, contentColor = Color.White),
@@ -415,7 +391,7 @@ fun AdminSettingsScreen(onBack: () -> Unit, firstTime: Boolean = false) {
                         busy = false
                     }
                 },
-                enabled = loaded && !busy && (iaFilled || token.isNotBlank()),
+                enabled = loaded && !busy && (iaFilled || token.isNotBlank() || tmdbKey.isNotBlank() || prefix.isNotBlank()),
                 modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(4.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = GColors.Red, contentColor = Color.White),
             ) { Text("Kaydet", fontWeight = FontWeight.Bold) }
