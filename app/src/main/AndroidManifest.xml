@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- G-Flix Stüdyo: arka planda yükleme -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Yakalama bildirimi "şu an çalıyor" biçiminde (durum çubuğu çipi, kilit ekranı kartı) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- İstek listesi: uygulama arkadayken tarayıcı küçük bir pencerede görünür kalsın (görünmeyen sayfada oynatıcı video başlatmıyor) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Kilit ekranında: liste çalışırken işlemci uyumasın -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Kendini güncelleme (APK indirmeden): ilk güncellemede bir kez onay, sonrakiler sessiz (Android 12+) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+
+    <!-- TV kutusu: telefon uygulaması orada da çalışsın (dokunmatik/telefon gerekmez); açılışta liste kendiliğinden başlasın -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:name=".GFlixApp"
+        android:allowBackup="true"
+        android:banner="@mipmap/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GFlix"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+            <!-- Bilgisayara bağlanma: "gflix-yayin anahtar"ın gösterdiği QR (gflix://pc?h=…&t=…&k=…) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="gflix" android:host="pc" />
+            </intent-filter>
+        </activity>
+
+        <!-- İstek listesi kilit ekranında: ekranı açar, kilidin üzerinde karanlık sayfada çalışır, iş bitince kapanır -->
+        <receiver android:name=".admin.BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <activity
+            android:name=".admin.WishRunActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.GFlix.Player" />
+
+        <activity
+            android:name=".player.PlayerActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:theme="@style/Theme.GFlix.Player" />
+
+        <activity
+            android:name=".player.TrailerActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:theme="@style/Theme.GFlix.Player" />
+
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+        <!-- Çevrimdışı izleme: indirmeler (Wi-Fi'de) -->
+        <service
+            android:name=".offline.GFlixDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="androidx.media3.exoplayer.scheduler.PlatformScheduler$PlatformSchedulerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Sayfadan Yakala arka planda (sıra sürerken uygulama kapatılmasın) -->
+        <service
+            android:name=".admin.CaptureService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|mediaPlayback" />
+        <!-- Kendini güncelleme sonucu -->
+        <receiver android:name=".update.UpdateReceiver" android:exported="false" />
+    </application>
+</manifest>

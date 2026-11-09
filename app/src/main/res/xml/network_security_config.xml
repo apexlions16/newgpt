@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ev ağındaki Linux bilgisayara (192.168.x.x:8765) dosya gönderimi düz HTTP ile yapılır; adres önceden bilinmediği
+     için düz HTTP'ye genel izin veriliyor. GitHub ve TMDB bağlantıları her zaman HTTPS'tir. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

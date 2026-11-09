@@ -1,0 +1,8 @@
+{
+  "name": "gflix-tv",
+  "private": true,
+  "version": "1.0.0",
+  "description": "G-Flix Samsung Tizen TV uygulaması",
+  "scripts": { "build": "node build.mjs" },
+  "devDependencies": { "esbuild": "0.24.2" }
+}

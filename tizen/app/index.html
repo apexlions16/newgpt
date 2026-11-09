@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, user-scalable=no">
+  <title>G-Flix</title>
+  <link id="gflix-css" rel="stylesheet" href="css/tv.css">
+  <script src="$WEBAPIS/webapis/webapis.js"></script>
+  <script src="js/vendor/hls.min.js"></script>
+</head>
+<body>
+  <object id="avplayer" type="application/avplayer"></object>
+  <div id="stage"></div>
+  <script>
+    // Kendini güncelleme: arayüz bilgisayardaki G-Flix sunucusundan (en güncel hâli) yüklenir;
+    // sunucuya ulaşılamazsa uygulamanın içindeki kopya açılır. Böylece TV'ye yeniden kurulum gerekmez.
+    (function () {
+      function run(src) { var s = document.createElement("script"); s.src = src; document.body.appendChild(s); }
+      function local() { run("js/app.js"); }
+      var base = null;
+      try { base = localStorage.getItem("gflix.tv.server"); } catch (e) {}
+      if (/^https?:/.test(location.protocol) || !base) return local();
+      var done = false, x = new XMLHttpRequest();
+      function fallback() { if (!done) { done = true; local(); } }
+      x.open("GET", base + "/tv/js/app.js?kontrol=" + Date.now(), true);
+      x.timeout = 2500;
+      x.onload = function () {
+        if (done) return;
+        if (x.status !== 200 || x.responseText.length < 1000) return fallback();
+        done = true;
+        window.GFLIX_REMOTE = base;
+        var v = Date.now();
+        document.getElementById("gflix-css").href = base + "/tv/css/tv.css?v=" + v;
+        run(base + "/tv/js/app.js?v=" + v);
+      };
+      x.onerror = fallback; x.ontimeout = fallback;
+      x.send();
+      setTimeout(fallback, 3500);
+    })();
+  </script>
+</body>
+</html>

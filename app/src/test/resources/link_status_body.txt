@@ -1,0 +1,9 @@
+⚙️ Başlangıç (2010) — 1 öğe indiriliyor
+- Film: İndiriliyor (%27)
+- Fragman: İndirildi
+
+Canlı kayıt: https://github.com/x/y/actions/runs/7
+
+<!--GFLIX_STATUS
+{"v": 1, "state": "running", "stage": "1 öğe indiriliyor", "title": "Başlangıç (2010)", "kind": "movie", "started": 1793492574, "updated": 1793492574, "run_url": "https://github.com/x/y/actions/runs/7", "items": [{"label": "Film", "state": "downloading", "progress": 0.27, "text": "İndiriliyor", "error": "", "files": [{"label": "Video", "state": "active", "done": 1100, "total": 2000, "speed": 41, "error": ""}]}], "trailer": {"state": "ready", "text": "İndirildi", "files": []}, "log": ["▶ test \"tırnak\" ve ğüşıöç"], "warnings": []}
+-->

@@ -1,0 +1,74 @@
+{
+  "name": "gflix-desktop",
+  "productName": "G-Flix",
+  "version": "1.0.0",
+  "description": "G-Flix — bilgisayar için film ve dizi uygulaması",
+  "main": "main.js",
+  "author": "G-Flix",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "serve": "node server.js",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "hls.js": "1.5.20"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.gflix.desktop",
+    "productName": "G-Flix",
+    "copyright": "G-Flix",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!.data/**",
+      "!**/*.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "pc-kurulum-${version}.exe",
+      "shortcutName": "G-Flix",
+      "uninstallDisplayName": "G-Flix"
+    },
+    "portable": {
+      "artifactName": "pc-tasinabilir-${version}.exe"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "AudioVideo",
+      "icon": "build/icon.png",
+      "artifactName": "pc-${version}.AppImage",
+      "synopsis": "Film ve dizi"
+    }
+  }
+}
