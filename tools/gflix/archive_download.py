@@ -242,6 +242,7 @@ class ArchiveQueue:
                 "x-archive-queue-derive": "0",
                 "x-archive-keep-old-version": "0",
                 "x-archive-meta-mediatype": kind,
+                "x-archive-meta-collection": "opensource_movies" if kind == "movies" else "opensource",
                 "x-archive-meta-title": title,
                 "x-archive-meta-subject": "gflix",
             }
@@ -249,7 +250,7 @@ class ArchiveQueue:
                 with file.open("rb") as stream:
                     try:
                         resp = requests.put(f"https://s3.us.archive.org/{item}/{encoded}",
-                                            data=stream, headers=headers, timeout=(30, 1800))
+                                            data=stream, headers=headers, timeout=(30, 1800), allow_redirects=False)
                     except requests.RequestException:
                         if attempt == 4:
                             raise

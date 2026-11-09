@@ -940,7 +940,7 @@ object WishList {
                 val lbl = label(w, e)
                 when (state) {
                     "ok" -> { if (e != null) { e.state = "done"; e.pcJid = ""; e.note = "☁️ archive.org'a yüklendi ${hhmm(t)}" } else { w.state = "done"; w.pcJid = ""; w.note = "☁️ archive.org'a yüklendi ${hhmm(t)}" }
-                        pcNow = "🖥️ $lbl alındı" }
+                        pcNow = "☁️ $lbl archive.org\'a yüklendi" }
                     "black" -> {
                         val next = t + backoff(0)
                         if (e != null) { e.state = "retry"; e.pcJid = ""; e.nextAt = next; e.note = "🖥️ $note; ${hhmm(next)}'de tekrar · ${e.tries}. deneme" }
@@ -948,7 +948,7 @@ object WishList {
                         warnBlack("🖥️ $lbl")
                     }
                     "lost" -> { if (e != null) { e.state = "wait"; e.pcJid = "" } else { w.state = "wait"; w.pcJid = "" } }   // bilgisayar yeniden başladı
-                    else -> pcNow = "🖥️ $lbl: bilgisayarda " + if (state == "work") "yakalanıyor" else "sırada"
+                    else -> pcNow = "☁️ $lbl: " + note.ifBlank { if (state == "work") "indiriliyor / yükleniyor" else "sırada" }
                 }
                 if (e != null) refreshState(w)
             }

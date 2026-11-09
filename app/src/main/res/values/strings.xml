@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">G-Flix Archive</string>
+    <string name="app_name">G-Flix Next</string>
     <string name="downloads_channel">İndirilenler</string>
     <string name="updates_channel">Güncellemeler</string>
 </resources>
