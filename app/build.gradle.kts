@@ -39,6 +39,17 @@ android {
     // Release keystore is never kept in source control. Provide all GFLIX_KEYSTORE* values in CI.
     val signingFile = cfg("GFLIX_KEYSTORE").takeIf { it.isNotBlank() }?.let { file(it) }
     signingConfigs {
+        // CI test builds use a stable, cached keystore; local builds retain Android's default debug key.
+        getByName("debug") {
+            val path = cfg("GFLIX_DEBUG_KEYSTORE")
+            val keyFile = path.takeIf { it.isNotBlank() }?.let { file(it) }
+            if (keyFile?.isFile == true) {
+                storeFile = keyFile
+                storePassword = cfg("GFLIX_DEBUG_KEYSTORE_PASSWORD")
+                keyAlias = cfg("GFLIX_DEBUG_KEY_ALIAS", "gflix-next")
+                keyPassword = cfg("GFLIX_DEBUG_KEY_PASSWORD", cfg("GFLIX_DEBUG_KEYSTORE_PASSWORD"))
+            }
+        }
         create("gflix") {
             signingFile?.let { storeFile = it }
             storePassword = cfg("GFLIX_KEYSTORE_PASSWORD")
