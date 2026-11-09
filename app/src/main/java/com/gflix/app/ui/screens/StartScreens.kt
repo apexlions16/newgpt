@@ -58,11 +58,12 @@ fun SplashScreen(onDone: (String) -> Unit) {
         c.tokens.token = state.token ?: c.builtInToken
         c.catalogRepository.loadCached()
         val archive = com.gflix.app.archive.ArchiveSource.configured
-        if (c.hasToken || archive) c.appScope.launch { c.catalogRepository.refresh() }
+        val paired = com.gflix.app.data.PcServer.configured
+        if (c.hasToken || archive || paired) c.appScope.launch { c.catalogRepository.refresh() }
         animDone.await()                                         // giriş animasyonu bitsin (dokununca atlanır)
         onDone(
             when {
-                !c.hasToken && !archive -> Routes.SETUP
+                !c.hasToken && !archive && !paired && !state.setupSkipped && state.profiles.isEmpty() -> Routes.SETUP
                 state.profiles.isEmpty() -> Routes.profileEdit("new", first = true)
                 else -> Routes.profiles()
             }
@@ -136,6 +137,17 @@ fun SetupScreen(onDone: () -> Unit) {
             shape = RoundedCornerShape(4.dp),
             colors = ButtonDefaults.buttonColors(containerColor = GColors.Red, contentColor = Color.White),
         ) { Text(if (busy) "Kontrol ediliyor…" else "Arşive bağlan", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = {
+                scope.launch {
+                    context.appContainer.userStore.update { it.copy(setupSkipped = true) }
+                    onDone()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333), contentColor = Color.White),
+        ) { Text("Arşiv ayarını sonra yap · Stüdyo'ya geç", fontWeight = FontWeight.Bold) }
         Spacer(Modifier.height(32.dp))
         Text("Eski düzen (GitHub)", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
