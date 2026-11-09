@@ -123,6 +123,8 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             store.updateTask(id) { it.copy(status = TaskStatus.QUEUED,
                 message = "İşlem kesildi · kaynaklar korundu, yeniden başlatılacak") }
             throw e
+        } catch (e: LinkageError) {
+            fail("Video motoru yüklenemedi (${e.javaClass.simpleName}); aynı imzalı güncel APK'yı kur. Kaynaklar korundu")
         } catch (e: Exception) {
             if (runAttemptCount < 2 && e is IOException) {
                 store.updateTask(id) { it.copy(status = TaskStatus.QUEUED, message = "Tekrar denenecek: ${e.message}") }

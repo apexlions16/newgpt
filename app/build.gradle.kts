@@ -123,6 +123,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // On-device HLS fetch and lossless MKV remux of video, audio and subtitle tracks.
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
+    // The 8.1.7 AAR references these classes without declaring them in its runtime metadata.
+    implementation("com.arthenica:smart-exception-java:0.2.1")
+    implementation("com.arthenica:smart-exception-common:0.2.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.6.2")
