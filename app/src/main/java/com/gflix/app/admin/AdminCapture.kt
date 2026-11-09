@@ -663,7 +663,14 @@ object CaptureEngine {
                 }
                 s.sent = true
                 runCatching { send(s) }
-                    .onSuccess { prefs.edit().putLong("sent:" + s.pageUrl, System.currentTimeMillis()).apply(); status = if (s.sentTag == PC_SOURCE) "${sentTitle.orEmpty()}\nStüdyo → Onay bekleyenler'den TMDB ile eşleştirip yayına al." else "📤 Bilgisayara gönderildi: ${sentTitle.orEmpty()}\nBilgisayar filmi/bölümü tanıyıp en iyi kalitede indirecek." }
+                    .onSuccess {
+                        prefs.edit().putLong("sent:" + s.pageUrl, System.currentTimeMillis()).apply()
+                        status = when {
+                            s.sentTag?.startsWith("phone:") == true -> "📱 Telefonda indirme başladı: ${sentTitle.orEmpty()} · arşiv doğrulanmadan iş bitmiş sayılmaz."
+                            s.sentTag == PC_SOURCE -> "${sentTitle.orEmpty()}\nStüdyo → Onay bekleyenler'den TMDB ile eşleştirip yayına al."
+                            else -> "📤 Bilgisayara gönderildi: ${sentTitle.orEmpty()}"
+                        }
+                    }
                     .onFailure { s.sent = false; s.longAt = System.currentTimeMillis(); status = "Gönderilemedi, yeniden denenecek: ${it.message}" }
             }
         }
@@ -769,7 +776,8 @@ object CaptureEngine {
     // ---------------------------------------------------------------- İstek listesi için (arka planda)
 
     /** Liste bu an tarayıcıyı kullanabilir mi: elle sıra/arama yok, kullanıcı Sayfadan Yakala'da gezinmiyor (film izlerken de sürer) */
-    internal fun canWish(): Boolean = ::app.isInitialized && queueAt < 0 && !navBusy && (!onScreen || listOpen) && hasSite() && (appVisible || WishList.bgRun || watching)
+    internal fun canWish(): Boolean = ::app.isInitialized && queueAt < 0 && !navBusy && (!onScreen || listOpen) &&
+        (hasSite() || WishList.items.any { it.pageUrl.isNotBlank() }) && (appVisible || WishList.bgRun || watching)
 
     /** Tazeleme (biri izlemek istiyor) için: telefonda film/dizi izlenirken de olur (tarayıcı sessiz ve görünmez) */
     internal fun canRefresh(): Boolean = ::app.isInitialized && queueAt < 0 && !navBusy && (!onScreen || listOpen) && hasSite() &&
