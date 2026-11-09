@@ -166,8 +166,8 @@ object WishList {
             val i = l.indexOf('\t'); if (i > 0) l.substring(i + 1).toLongOrNull()?.let { catReadAt[l.substring(0, i)] = it }
         }
         runCatching { AppJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Suggest.serializer()), prefs.getString("sugs", "[]") ?: "[]") }
-            .getOrNull()?.let { if (prefs.getBoolean("worker", isTv(app))) sugs.addAll(it) }
-        worker = prefs.getBoolean("worker", isTv(app))
+            .getOrNull()?.let { if (prefs.getBoolean("worker", isTv(app) || !PcServer.configured)) sugs.addAll(it) }
+        worker = prefs.getBoolean("worker", isTv(app) || !PcServer.configured)
         prefs.getString("events", "").orEmpty().lines().forEach { l ->
             val i = l.indexOf('\t'); if (i > 0) l.substring(0, i).toLongOrNull()?.let { events.addLast(it to l.substring(i + 1)) }
         }
@@ -917,8 +917,9 @@ object WishList {
             ?.let { w -> busy { scan(w) }; delay(gapSec * 1000L); return }
         // 3) sıradaki parça: listedeki SIRAYA göre (kullanıcı ↑↓ ile ayarlar)
         val (w, e) = nextUnit(items, t) ?: return
-        if (pcShare && PcServer.configured) {
-            now = "🖥️ Bilgisayarda indirme ve archive.org doğrulaması bekleniyor"
+        if (pcShare) {
+            now = if (PcServer.configured) "🖥️ Bilgisayarda indirme ve archive.org doğrulaması bekleniyor"
+                  else "🖥️ İndirmek için bilgisayarı Profil → Bilgisayar bağlantısı bölümünden bağla"
             return
         }
         if (e == null) busy { captureMovie(w) } else busy { captureEp(w, e) }
@@ -955,6 +956,11 @@ object WishList {
             if (pcUnits().isNotEmpty()) return          // bilgisayar meşgul: aynı anda tek iş
         }
         if (!pcShare || !started) { pcNow = ""; return }
+        val archiving = runCatching { PcServer.archiveJobs() }.getOrNull()
+        if ((archiving?.get("enabled") as? JsonPrimitive)?.content != "true") {
+            pcNow = "⚠ Bilgisayarda archive.org indirme ayarı kapalı veya sunucu güncel değil"
+            return
+        }
         if (oneByOne && restUntil > t) { pcNow = ""; return }
         val next = nextUnit(pool(), t)
         val movie = next?.takeIf { it.second == null }?.first
@@ -1200,18 +1206,36 @@ fun WishListDialog(onDismiss: () -> Unit) {
     var siteMsg by remember { mutableStateOf<String?>(null) }
     @Suppress("UNUSED_VARIABLE") val rev = WishList.rev
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     fun search() {
         if (q.trim().length < 2) return
         err = null; pick = null
         scope.launch {
-            runCatching { PcServer.tmdbSearch(q.trim()) }.onSuccess { o ->
-                hits = (o["results"] as? JsonArray).orEmpty().mapNotNull { e ->
-                    val x = e as? JsonObject ?: return@mapNotNull null
-                    fun s(k: String) = (x[k] as? JsonPrimitive)?.content?.takeIf { it != "null" }.orEmpty()
-                    TmdbHit(s("tmdb"), s("kind"), s("title"), s("original"), s("year").toIntOrNull())
+            runCatching {
+                val result = if (PcServer.configured) runCatching { PcServer.tmdbSearch(q.trim()) }.getOrNull() else null
+                if (result != null) {
+                    (result["results"] as? JsonArray).orEmpty().mapNotNull { e ->
+                        val x = e as? JsonObject ?: return@mapNotNull null
+                        fun s(k: String) = (x[k] as? JsonPrimitive)?.content?.takeIf { it != "null" }.orEmpty()
+                        TmdbHit(s("tmdb"), s("kind"), s("title"), s("original"), s("year").toIntOrNull())
+                    }
+                } else {
+                    // Telefon bilgisayardan bağımsız arayabilsin; anahtar bir kez Stüdyo Ayarları'nda saklanır.
+                    val tmdbKey = AdminStore(context).current().tmdbKey.orEmpty()
+                    require(tmdbKey.isNotBlank()) {
+                        "TMDB için Stüdyo Ayarları'na bir kez TMDB API anahtarı kaydet veya bilgisayara bağlan."
+                    }
+                    val client = Tmdb(tmdbKey, okhttp3.OkHttpClient())
+                    listOf("movie", "tv").flatMap { kind ->
+                        client.search(kind, q.trim(), null).take(8).map {
+                            TmdbHit("$kind/${it.id}", kind, it.title, it.originalTitle, it.year)
+                        }
+                    }
                 }
+            }.onSuccess { found ->
+                hits = found
                 if (hits.isEmpty()) err = "TMDB'de sonuç yok"
-            }.onFailure { err = "Bilgisayara ulaşılamadı: ${it.message}" }
+            }.onFailure { err = it.message ?: "TMDB araması başarısız" }
         }
     }
 
