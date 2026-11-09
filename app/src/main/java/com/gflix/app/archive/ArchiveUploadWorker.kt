@@ -100,7 +100,7 @@ class ArchiveUploadWorker(context: Context, params: WorkerParameters) : Coroutin
     }
 
     private suspend fun upload(task: UploadTask, item: String, client: ArchiveClient) {
-        val existing = client.files(item)
+        val existing = client.filesInfo(item)
         val total = task.files.sumOf { it.length }
         val done = AtomicLong(0)
         var lastUi = 0L
@@ -115,8 +115,13 @@ class ArchiveUploadWorker(context: Context, params: WorkerParameters) : Coroutin
         }
         for (f in task.files) {
             // Daha önce gönderilmiş (md5'i kayıtlı) ya da archive.org'da aynı boyutla duran dosya tekrar gitmez
-            val sentBefore = store.task(task.id)?.files?.firstOrNull { it.assetName == f.assetName }?.md5 != null
-            if (sentBefore || existing[f.assetName] == f.length) { report(f.length); continue }
+            val previousMd5 = store.task(task.id)?.files?.firstOrNull { it.assetName == f.assetName }?.md5
+            val remote = existing[f.assetName]
+            // A matching size is not proof; only a matching remote checksum allows a safe skip.
+            if (previousMd5 != null && remote?.first == f.length &&
+                remote.second != null && remote.second.equals(previousMd5, ignoreCase = true)) {
+                report(f.length); continue
+            }
             var attempt = 0
             var busyWaits = 0
             while (true) {
@@ -362,7 +367,9 @@ class ArchiveVerifyWorker(context: Context, params: WorkerParameters) : Coroutin
         val remote = client.filesInfo(item)
         val ready = task.files.count { f ->
             val r = remote[f.assetName] ?: return@count false
-            r.first == f.length && (f.md5 == null || r.second == null || r.second.equals(f.md5, ignoreCase = true))
+            r.first == f.length && (if (task.tag == PhoneArchiveWorker.TAG)
+                f.md5 != null && r.second != null && r.second.equals(f.md5, ignoreCase = true)
+                else f.md5 == null || r.second == null || r.second.equals(f.md5, ignoreCase = true))
         }
         // aynı boyutta ama farklı içerik: archive.org'daki dosya bozuk ya da eski sürüm
         val mismatch = task.files.firstOrNull { f -> remote[f.assetName]?.let { r -> r.first == f.length && f.md5 != null && r.second != null && !r.second.equals(f.md5, true) } == true }
@@ -371,7 +378,15 @@ class ArchiveVerifyWorker(context: Context, params: WorkerParameters) : Coroutin
             return try {
                 store.updateTask(id) { it.copy(message = "Kataloğa ekleniyor…") }
                 ArchiveUploadWorker.addToCatalog(applicationContext, task, item)
-                ArchivePublishWorker.enqueue(applicationContext)
+                if (task.tag == PhoneArchiveWorker.TAG) {
+                    // Confirm the updated catalog is also on archive.org before freeing phone space.
+                    ArchiveCatalog(applicationContext).publish(client)
+                    val staging = File(applicationContext.filesDir, "phone-archive/$id")
+                    if (staging.exists() && !staging.deleteRecursively())
+                        throw IOException("Arşiv doğrulandı fakat geçici dosyalar temizlenemedi")
+                } else {
+                    ArchivePublishWorker.enqueue(applicationContext)
+                }
                 store.updateTask(id) { it.copy(status = TaskStatus.DONE, message = null) }
                 applicationContext.getSystemService(android.app.NotificationManager::class.java).notify(7300 + id.hashCode(),
                     NotificationCompat.Builder(applicationContext, "uploads").setSmallIcon(R.drawable.ic_launcher_monochrome)
