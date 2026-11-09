@@ -11,6 +11,14 @@ class PhoneProgressTest {
         assertEquals(100, PhoneProgress.percent(Long.MAX_VALUE, Long.MAX_VALUE))
         assertEquals(0, PhoneProgress.percent(-1, 100))
     }
+    @Test fun interruptedMuxNeverResumesAsAnUploadOrArchiveVerification() {
+        assertEquals("download", PhoneProgress.recoveryStage("processing", false))
+        assertEquals("download", PhoneProgress.recoveryStage("queued", false))
+        assertEquals("verify", PhoneProgress.recoveryStage("processing", true))
+        assertEquals("upload", PhoneProgress.recoveryStage("queued", true))
+        assertNull(PhoneProgress.recoveryStage("done", true))
+        assertNull(PhoneProgress.recoveryStage("failed", false))
+    }
     @Test fun cleanupNeedsBothSizeAndChecksum() {
         assertFalse(PhoneProgress.verified(10, "abc", 10L to null))
         assertFalse(PhoneProgress.verified(10, null, 10L to "abc"))

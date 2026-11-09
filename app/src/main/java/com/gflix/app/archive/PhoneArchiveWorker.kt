@@ -287,13 +287,40 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             return ascii.replace(Regex("[^a-z0-9]+"), "-").trim('-').take(48).ifBlank { "media" }
         }
 
-        fun retry(context: Context, jobId: String) {
+        fun retry(context: Context, jobId: String) = enqueueDownload(context, jobId, ExistingWorkPolicy.REPLACE)
+
+        private fun enqueueDownload(context: Context, jobId: String, policy: ExistingWorkPolicy) {
             val req = OneTimeWorkRequestBuilder<PhoneArchiveWorker>()
                 .setInputData(workDataOf(KEY_ID to jobId))
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 45, TimeUnit.SECONDS)
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork("$TAG-$jobId", ExistingWorkPolicy.REPLACE, req)
+            WorkManager.getInstance(context).enqueueUniqueWork("$TAG-$jobId", policy, req)
+        }
+
+        /** Recover v27 jobs whose native library crashed after leaving PROCESSING in the local store. */
+        suspend fun recover(context: Context) {
+            val store = AdminStore(context)
+            val task = store.current().tasks.filter { it.tag == TAG && it.status != TaskStatus.DONE }
+                .minByOrNull { it.createdAt } ?: return
+            val stage = PhoneProgress.recoveryStage(task.status, task.files.isNotEmpty()) ?: return
+            val workName = when (stage) {
+                "download" -> "$TAG-${task.id}"
+                "verify" -> "ia-verify-${task.id}"
+                else -> "ia-upload-${task.id}"
+            }
+            val wm = WorkManager.getInstance(context)
+            val works = withContext(Dispatchers.IO) { wm.getWorkInfosForUniqueWork(workName).get() }
+            if (works.any { !it.state.isFinished }) return
+            when (stage) {
+                "download" -> {
+                    store.updateTask(task.id) { it.copy(status = TaskStatus.QUEUED, phase = "download", percent = -1,
+                        message = "Önceki sürümde kesilen iş yeniden başlatılıyor; kayıtlı ayarlar ve kaynaklar korundu") }
+                    enqueueDownload(context, task.id, ExistingWorkPolicy.KEEP)
+                }
+                "verify" -> ArchiveVerifyWorker.enqueue(context, task.id, 0)
+                else -> ArchiveUploadWorker.enqueue(context, task.id)
+            }
         }
 
         suspend fun startNext(context: Context) {

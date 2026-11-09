@@ -825,6 +825,8 @@ object WishList {
         while (true) {
             delay(15_000)
             if (!::app.isInitialized || !worker) continue        // panel (telefon): iş yapılmaz, sadece izlenir
+            if (phoneArchive) runCatching { com.gflix.app.archive.PhoneArchiveWorker.recover(app) }
+                .onFailure { now = "Telefon işi yeniden başlatılamadı: ${it.message}" }
             if (PcServer.configured && !phoneArchive) {
                 runCatching { syncRefresh() }
                 runCatching { syncNewEps() }.onFailure { now = "⚠ Yeni bölümler: ${it.message}" }
