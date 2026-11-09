@@ -121,6 +121,8 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                     Spacer(Modifier.height(8.dp))
                     WishHomeButton()
                     Spacer(Modifier.height(8.dp))
+                    ArchiveJobsCard()
+                    Spacer(Modifier.height(8.dp))
                     YtFollowButton()
                     Spacer(Modifier.height(8.dp))
                     AddLinkButton()
@@ -130,11 +132,18 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333), contentColor = Color.White),
                     ) { Text("🖥️  Canlı Kayıt  ·  Bilgisayarda akan bütün satırlar", fontWeight = FontWeight.Bold, fontSize = 14.sp) }
                     Spacer(Modifier.height(6.dp))
-                    Hint("Hiçbir şey GitHub'a gitmez, video hiçbir yere kaydedilmez: basınca bilgisayar siteden o anki yayını çeker. " +
-                        "Yanlış fragmanı fragman ekranındaki ⚑ ile düzelt.")
+                    Hint("İstek listesinde indirme modu açıksa izinli videolar bilgisayara indirilir, archive.org'a yüklenir ve doğrulanınca kataloğa eklenir. " +
+                        "Arşivleme kapalıysa eski anlık yayın sistemi kullanılabilir. Yanlış fragmanı ⚑ ile düzelt.")
                 }
             }
             if (!pc) catalog?.stats?.let { st -> item { ArchiveStats(st); Spacer(Modifier.height(12.dp)) } }
+            // archive.org yükleme modu seçiliyken de TMDB istek listesi ve kategori taraması erişilebilir.
+            if (ia && com.gflix.app.data.PcServer.configured) item {
+                WishHomeButton()
+                Spacer(Modifier.height(8.dp))
+                ArchiveJobsCard()
+                Spacer(Modifier.height(12.dp))
+            }
             if (ia) item {
                 Button(
                     onClick = onUpload, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(4.dp),
@@ -688,7 +697,7 @@ private fun PcStatsCard() {
             color = GColors.TextSecondary, fontSize = 12.sp)
         Text("👀 İzleme: bugün ${n("playsToday")} (${size(n("bytesToday"))}) · bu ay ${n("playsMonth")} (${size(n("bytesMonth"))}) · toplam ${n("playsTotal")}",
             color = GColors.TextSecondary, fontSize = 12.sp)
-        Text("💾 Bilgisayarda kaplanan: ${size(n("ownBytes"))} (video yok) · ☁️ GitHub'a giden: 0",
+        Text("💾 Bilgisayarda kullanılan alan: ${size(n("ownBytes"))} · ☁️ GitHub'a giden: 0",
             color = GColors.TextSecondary, fontSize = 12.sp)
         val recent = (st?.get("recent") as? kotlinx.serialization.json.JsonArray)?.mapNotNull {
             ((it as? kotlinx.serialization.json.JsonObject)?.get("title") as? kotlinx.serialization.json.JsonPrimitive)?.content
@@ -726,6 +735,51 @@ private fun ArchiveStats(st: com.gflix.app.data.CatalogStats) {
 }
 
 
+/** İstek listesinin bilgisayardaki archive.org işlerini görünür kılar; anahtarlar yalnızca bilgisayarda tutulur. */
+@Composable
+private fun ArchiveJobsCard() {
+    var snapshot by remember { mutableStateOf<kotlinx.serialization.json.JsonObject?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            runCatching { com.gflix.app.data.PcServer.archiveJobs() }
+                .onSuccess { snapshot = it; error = null }
+                .onFailure { error = if ((it as? com.gflix.app.data.PcException)?.code == 404)
+                    "Bilgisayarın yeni sürümünde indirme kuyruğu görünecek."
+                    else it.message }
+            delay(15_000)
+        }
+    }
+    val rows = (snapshot?.get("jobs") as? kotlinx.serialization.json.JsonArray)
+        ?.mapNotNull { it as? kotlinx.serialization.json.JsonObject }.orEmpty()
+    fun field(j: kotlinx.serialization.json.JsonObject, name: String): String =
+        (j[name] as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+    val enabled = (snapshot?.get("enabled") as? kotlinx.serialization.json.JsonPrimitive)?.content == "true"
+    val active = rows.count { field(it, "state") in setOf("queued", "downloading", "uploading", "verifying", "catalog", "retry") }
+    val done = rows.count { field(it, "state") == "done" }
+    val failed = rows.count { field(it, "state") == "failed" }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFF192632)).padding(12.dp)) {
+        Text("📥 İndirme → ☁️ archive.org", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(if (snapshot == null && error == null) "Bilgisayardaki işler kontrol ediliyor…"
+            else if (!enabled && snapshot != null) "Otomatik arşivleme kapalı. Bilgisayarda yayın ayarlarından etkinleştir."
+            else "$active sırada/işleniyor · $done tamamlandı · $failed başarısız",
+            color = GColors.TextSecondary, fontSize = 12.sp)
+        rows.filter { field(it, "state") != "done" }.take(3).forEach { j ->
+            val name = field(j, "title").ifBlank { field(j, "item_id") }
+            val state = when (field(j, "state")) {
+                "queued" -> "Sırada"; "downloading" -> "İndiriliyor"
+                "uploading" -> "archive.org'a yükleniyor"; "verifying" -> "Doğrulanıyor"
+                "catalog" -> "Kataloğa ekleniyor"; "retry" -> "Yeniden denenecek"
+                "failed" -> "Başarısız"; else -> "İşleniyor"
+            }
+            Text("• $name · $state" + field(j, "note").takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                color = Color.White, fontSize = 11.sp, maxLines = 2)
+        }
+        error?.let { Text(it, color = Color(0xFFFFA0A0), fontSize = 11.sp) }
+    }
+}
+
+
 /** 🎯 İstek listesi: Stüdyo ana sayfasından doğrudan (özet + aç) */
 @Composable
 private fun WishHomeButton() {
@@ -738,7 +792,7 @@ private fun WishHomeButton() {
         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F3A2A), contentColor = Color.White),
     ) {
         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            Text("🎯  İstek listesi  ·  TMDB'den seç, arkada alana kadar dener", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text("🎯  İstek listesi  ·  TMDB'den seç, indir ve arşivle", fontWeight = FontWeight.Bold, fontSize = 14.sp)
             if (WishList.items.isNotEmpty()) Text(WishList.summary().removePrefix("🎯 İstek listesi: "), fontSize = 12.sp, color = GColors.TextSecondary)
             if (WishList.now.isNotBlank()) Text(WishList.now, fontSize = 12.sp, color = GColors.Match, maxLines = 1)
             WishList.toReview().size.takeIf { it > 0 }?.let { Text("🔍 $it otomatik eşleşme kontrol bekliyor", fontSize = 12.sp, color = Color(0xFF7FB2FF)) }
