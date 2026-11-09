@@ -29,6 +29,10 @@ import com.gflix.app.admin.UploadFile
 import com.gflix.app.admin.UploadTask
 import com.gflix.app.data.AppJson
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -42,6 +46,7 @@ import java.io.IOException
 import java.net.URI
 import java.text.Normalizer
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 
 /**
@@ -63,10 +68,22 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
 
     override suspend fun doWork(): Result {
         if (id.isBlank()) return Result.failure()
+        val queue = store.current().tasks.filter { it.tag == TAG && it.status != TaskStatus.DONE }
+            .sortedBy { it.createdAt }
+        if (queue.firstOrNull()?.id != id) {
+            store.updateTask(id) { it.copy(message = "Sırada · önceki iş arşivde doğrulanıp temizlenince başlayacak") }
+            return Result.retry()
+        }
         val raw = File(folder, "capture.json")
         if (!raw.isFile) return Result.failure()
         val task = store.task(id) ?: return Result.failure()
         if (task.status == TaskStatus.DONE) return Result.success()
+        // WorkManager may redeliver this worker after a process death between handoffs.
+        if (task.files.isNotEmpty()) {
+            if (task.processingSince > 0) ArchiveVerifyWorker.enqueue(applicationContext, id, 0)
+            else ArchiveUploadWorker.enqueue(applicationContext, id)
+            return Result.success()
+        }
         val admin = store.current()
         if (!admin.archive || !admin.archiveRightsConfirmed) return fail("İzin onayı ve archive.org anahtarları Stüdyo Ayarları'nda gerekli")
         setForeground(foreground("Video ve sesler telefona indiriliyor"))
@@ -84,15 +101,27 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             if (!video.isFile || video.length() < 1024) throw IOException("Birleştirilmiş video boş")
             val file = task.files.firstOrNull()
             val name = file?.assetName ?: remoteName(task)
-            val manifest = task.manifest.copy(size = video.length(), fileName = name, parts = listOf(name))
+            val mediaInfo = withContext(Dispatchers.IO) { FFprobeKit.getMediaInformation(video.absolutePath).mediaInformation }
+                ?: throw IOException("Tamamlanan MKV okunamadı")
+            val tracks = mediaInfo.streams.orEmpty()
+            if (tracks.none { it.type == "video" }) throw IOException("MKV içinde video izi yok")
+            val manifest = task.manifest.copy(size = video.length(), fileName = name, parts = listOf(name),
+                audio = tracks.filter { it.type == "audio" }.map {
+                    com.gflix.app.admin.TrackSel(it.index.toInt(), it.tags?.optString("language", "und") ?: "und")
+                },
+                subs = tracks.filter { it.type == "subtitle" }.map {
+                    com.gflix.app.admin.SubSel(it.index.toInt(), it.tags?.optString("language", "und") ?: "und")
+                })
             store.updateTask(id) { it.copy(
                 status = TaskStatus.QUEUED, message = "Birleştirme tamamlandı; archive.org yüklemesi başlıyor",
                 manifest = manifest, files = listOf(UploadFile(Uri.fromFile(video).toString(), name, 0, video.length())),
-                bytesTotal = video.length()
+                bytesDone = 0, bytesTotal = video.length(), phase = "upload", percent = 0, updatedAt = System.currentTimeMillis()
             ) }
             ArchiveUploadWorker.enqueue(applicationContext, id)
             Result.success()
         } catch (e: CancellationException) {
+            store.updateTask(id) { it.copy(status = TaskStatus.QUEUED,
+                message = "İşlem kesildi · kaynaklar korundu, yeniden başlatılacak") }
             throw e
         } catch (e: Exception) {
             if (runAttemptCount < 2 && e is IOException) {
@@ -132,7 +161,13 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
                 if (key in setOf("User-Agent", "Referer", "Origin", "Cookie") &&
                     '\n' !in v && '\r' !in v && v.length < 4096) "$key: $v\r\n" else null
             }.joinToString("")
-        val args = mutableListOf("-hide_banner", "-nostdin", "-y", "-loglevel", "error")
+        // HLS is finite here: live playlists must not leave the queue running forever.
+        val durationMs = ((streams + playlists).maxOfOrNull { obj ->
+            text(obj, "duration").toDoubleOrNull() ?: Regex("#EXTINF:([0-9.]+)")
+                .findAll(text(obj, "text")).sumOf { it.groupValues[1].toDoubleOrNull() ?: 0.0 }
+        } ?: 0.0).times(1000).toLong()
+        val args = mutableListOf("-hide_banner", "-nostdin", "-y", "-loglevel", "warning",
+            "-rw_timeout", "30000000")
         if (headers.isNotEmpty()) args += listOf("-headers", headers)
         args += listOf("-i", url)
 
@@ -154,22 +189,71 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         subFiles.indices.forEach { j -> args += listOf("-map", "${j + 1}:0") }
         args += listOf("-c:v", "copy", "-c:a", "copy", "-c:s", "srt",
             "-max_muxing_queue_size", "2048", "-f", "matroska", target.absolutePath)
-        store.updateTask(id) { it.copy(status = TaskStatus.PROCESSING, message = "Video, tüm erişilebilir sesler ve altyazılar MKV'ye birleştiriliyor") }
-        val session = FFmpegKit.executeWithArguments(args.toTypedArray())
-        if (!ReturnCode.isSuccess(session.returnCode)) {
-            target.delete()
-            throw IOException("FFmpeg birleştirme başarısız (çıkış: ${session.returnCode?.value ?: -1})")
+        store.updateTask(id) { it.copy(status = TaskStatus.PROCESSING, phase = "download", percent = -1,
+            message = "Kaynak açılıyor · ses ve altyazılar hazırlanıyor", updatedAt = System.currentTimeMillis()) }
+        val completed = CompletableDeferred<com.arthenica.ffmpegkit.FFmpegSession>()
+        val time = AtomicLong(0)
+        val session = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray(),
+            { completed.complete(it) }, { /* Never persist source URLs, cookies or headers from FFmpeg logs. */ },
+            { stats -> time.set(stats.time.toLong()) })
+        val began = android.os.SystemClock.elapsedRealtime()
+        var movedAt = began
+        var lastSize = 0L
+        var lastTime = 0L
+        var previousTick = began
+        try {
+            while (!completed.isCompleted) {
+                delay(1500)
+                if (isStopped) throw CancellationException("Durduruldu")
+                val now = android.os.SystemClock.elapsedRealtime()
+                val size = target.length()
+                val ms = time.get()
+                if (size > lastSize || ms > lastTime) movedAt = now
+                val speed = (size - lastSize).coerceAtLeast(0) * 1000 / (now - previousTick).coerceAtLeast(1)
+                val pct = PhoneProgress.percent(ms, durationMs).let { if (it < 0) -1 else it.coerceAtMost(99) }
+                val message = (if (pct >= 0) "%$pct · " else "") +
+                    "${PhoneProgress.clock(ms)}" + (if (durationMs > 0) " / ${PhoneProgress.clock(durationMs)}" else "") +
+                    " · ${size / 1_048_576} MB · ${speed / 1024} KB/sn · geçen ${PhoneProgress.clock(now - began)}" +
+                    (if (now - movedAt > 15_000) " · kaynaktan veri bekleniyor (${(now - movedAt) / 1000} sn)" else "")
+                store.updateTask(id) { it.copy(message = message, bytesDone = size, percent = pct,
+                    updatedAt = System.currentTimeMillis()) }
+                setForeground(foreground(message, pct))
+                lastSize = size; lastTime = ms; previousTick = now
+                if (now - movedAt > 180_000) throw IOException("Kaynak 3 dakikadır veri göndermiyor; yeniden denenecek")
+            }
+            val result = completed.await()
+            if (!ReturnCode.isSuccess(result.returnCode)) {
+                val reason = when {
+                    folder.usableSpace < 64L * 1024 * 1024 -> "Telefonda yeterli boş alan yok"
+                    else -> "Kaynak bağlantısı veya bir medya izi okunamadı"
+                }
+                throw IOException("$reason (FFmpeg ${result.returnCode?.value ?: -1}); kaynak sayfasını yeniden yakalamak gerekebilir")
+            }
+            store.updateTask(id) { it.copy(message = "MKV dosyası ve medya izleri kontrol ediliyor", percent = 100) }
+            val info = withTimeout(60_000) {
+                withContext(Dispatchers.IO) { FFprobeKit.getMediaInformation(target.absolutePath).mediaInformation }
+            }
+            if (info == null || target.length() < 1024 || info.streams.orEmpty().none { it.type == "video" })
+                throw IOException("MKV doğrulanamadı; eksik dosya yüklenmeyecek")
+            val actualMs = (info.duration?.toDoubleOrNull() ?: 0.0) * 1000
+            if (durationMs > 0 && actualMs + 5000 < durationMs * 0.98)
+                throw IOException("Video eksik indi; tamamı indirilmeden arşive gönderilmeyecek")
+        } finally {
+            if (!completed.isCompleted) {
+                FFmpegKit.cancel(session.sessionId)
+                // Wait for the writer to close before a retry may reuse the partial path.
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    runCatching { withTimeout(10_000) { completed.await() } }
+                }
+            }
         }
-        val info = FFprobeKit.getMediaInformation(target.absolutePath).mediaInformation
-        if (info == null || target.length() < 1024)
-            throw IOException("MKV doğrulanamadı")
     }
 
     private fun remoteName(task: UploadTask): String =
         ArchiveUploadWorker.remoteBase(task.kind, task.manifest.itemId.orEmpty(),
             task.manifest.season, task.manifest.episode, null) + ".mkv"
 
-    private fun foreground(message: String): ForegroundInfo {
+    private fun foreground(message: String, percent: Int = -1): ForegroundInfo {
         val notificationManager = applicationContext.getSystemService(NotificationManager::class.java)
         notificationManager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Telefonla arşivleme", NotificationManager.IMPORTANCE_LOW))
@@ -177,7 +261,9 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle("G-Flix · Telefonda indiriliyor")
             .setContentText(message)
-            .setOngoing(true).build()
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setProgress(100, percent.coerceAtLeast(0), percent < 0)
+            .setOnlyAlertOnce(true).setOngoing(true).build()
         return if (Build.VERSION.SDK_INT >= 29)
             ForegroundInfo(8200 + id.hashCode().and(0x3fff), notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else ForegroundInfo(8200 + id.hashCode().and(0x3fff), notification)
@@ -212,6 +298,12 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 45, TimeUnit.SECONDS)
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork("$TAG-$jobId", ExistingWorkPolicy.REPLACE, req)
+        }
+
+        suspend fun startNext(context: Context) {
+            AdminStore(context).current().tasks.filter { it.tag == TAG && it.status != TaskStatus.DONE }
+                .minByOrNull { it.createdAt }?.takeIf { it.status == TaskStatus.QUEUED && it.files.isEmpty() }
+                ?.let { retry(context, it.id) }
         }
 
         /** A captured page becomes exactly one durable WorkManager job, never concurrent uploads. */

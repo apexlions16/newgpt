@@ -285,7 +285,9 @@ private fun TaskCard(t: UploadTask, live: Pair<Long, Long>?, onRetry: () -> Unit
             }
             TextButton(onClick = onRemove) { Text(if (t.status == TaskStatus.DONE) "Kaldır" else "Sil", color = GColors.TextSecondary, fontSize = 13.sp) }
         }
-        if (t.status == TaskStatus.UPLOADING || t.status == TaskStatus.QUEUED) {
+        if (t.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG && t.status != TaskStatus.DONE) {
+            PhoneTaskProgress(t)
+        } else if (t.status == TaskStatus.UPLOADING || t.status == TaskStatus.QUEUED) {
             ProgressLine(if (total > 0) done.toFloat() / total else 0f, Modifier.padding(vertical = 6.dp), height = 4.dp)
         }
         Text(text, color = color, fontSize = 12.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
@@ -753,10 +755,11 @@ private fun PhoneArchiveJobsCard() {
         jobs.filter { it.status != TaskStatus.DONE }.takeLast(3).forEach { job ->
             val label = when (job.status) {
                 TaskStatus.UPLOADING -> "Yükleniyor"
-                TaskStatus.PROCESSING -> "İşleniyor/doğrulanıyor"
+                TaskStatus.PROCESSING -> com.gflix.app.archive.PhoneProgress.label(job.phase)
                 TaskStatus.FAILED -> "Tekrar denenecek"
                 else -> "Sırada/indiriliyor"
             }
+            PhoneTaskProgress(job)
             Text("• ${job.display} · $label" + job.message?.let { " · $it" }.orEmpty(),
                 color = Color.White, fontSize = 11.sp, maxLines = 3)
         }

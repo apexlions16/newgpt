@@ -45,15 +45,25 @@ import java.util.concurrent.TimeUnit
  */
 object Updater {
     /** Sadece bu uygulamanın APK'ları (eski G-Flix'in APK'ları başka pakettir, kurulamaz) */
-    private const val APK_PREFIX = "gflix-archive-"
+    private const val APK_PREFIX = "G-Flix-Next-Telefon-"
+    private const val UPDATE_REPO = "apexlions16/newgpt"
+    private val updateHttp = okhttp3.OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(2, TimeUnit.MINUTES).build()
 
-    data class Info(val code: Int, val name: String, val apkUrl: String, val size: Long)
+    data class Info(val code: Int, val name: String, val apkUrl: String, val size: Long, val digest: String? = null)
 
     /** Hazır bekleyen güncelleme (ayarlar ekranı gösterir) */
     val ready = MutableStateFlow<Info?>(null)
+    val error = MutableStateFlow<String?>(null)
+
+    fun recordError(context: Context, message: String?) {
+        error.value = message
+        context.getSharedPreferences("updates", Context.MODE_PRIVATE).edit().putString("error", message).apply()
+    }
     private const val CHANNEL = "updates"
 
     fun schedule(context: Context) {
+        error.value = context.getSharedPreferences("updates", Context.MODE_PRIVATE).getString("error", null)
         val wifi = Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build()
         val wm = WorkManager.getInstance(context)
         wm.enqueueUniquePeriodicWork("update-check", ExistingPeriodicWorkPolicy.KEEP,
@@ -67,50 +77,97 @@ object Updater {
             OneTimeWorkRequestBuilder<UpdateWorker>().setInitialDelay(20, TimeUnit.SECONDS).build())
     }
 
-    /** Sürüm kodu = 10000 + derleme no (android.yml); etiket archive-v2.0.N */
-    private const val CODE_BASE = 10000
-
+    /** App updates always come from the app repository, independent of the user's media repository. */
     suspend fun latest(context: Context): Info? = withContext(Dispatchers.IO) {
-        // Bilgisayar eski G-Flix'in APK'sını verir; bu ayrı paket (com.gflix.archive) onu kuramaz
-        if (com.gflix.app.data.PcServer.configured) return@withContext null
-        // archive.org düzeninde anahtarsız GitHub isteği atılmaz (saatlik hak dolup başka şeyleri bekletmesin)
-        if (com.gflix.app.archive.ArchiveSource.configured && context.appContainer.tokens.token.isNullOrBlank()) return@withContext null
-        val client = context.appContainer.httpClient
         var best: Info? = null
         for (page in 1..3) {
-            val req = Request.Builder().url("${GitHub.API}/repos/${GitHub.owner}/${GitHub.repo}/releases?per_page=100&page=$page").build()
-            val arr = client.newCall(req).execute().use { r -> if (!r.isSuccessful) return@withContext best; AppJson.parseToJsonElement(r.body!!.string()).jsonArray }
+            val req = Request.Builder().url("https://api.github.com/repos/$UPDATE_REPO/releases?per_page=100&page=$page").build()
+            val arr = updateHttp.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) throw java.io.IOException("Güncelleme denetlenemedi (HTTP ${r.code})")
+                AppJson.parseToJsonElement(r.body!!.string()).jsonArray
+            }
             for (rel in arr) {
                 val o = rel.jsonObject
                 val tag = o["tag_name"]?.jsonPrimitive?.content ?: continue
-                val n = Regex("^archive-v2\\.0\\.(\\d+)$").find(tag)?.groupValues?.get(1)?.toIntOrNull() ?: continue
-                val code = CODE_BASE + n
-                if (o["draft"]?.jsonPrimitive?.content == "true") continue
-                val apk = (o["assets"] as? JsonArray)?.map { it.jsonObject }?.firstOrNull { a -> a["name"]?.jsonPrimitive?.content.orEmpty().let { it.endsWith(".apk") && it.startsWith(APK_PREFIX) } } ?: continue
-                if (best == null || code > best.code) best = Info(code, "2.0.$n", apk["url"]!!.jsonPrimitive.content, apk["size"]?.jsonPrimitive?.longOrNull ?: 0L)
+                val n = Regex("^phone-v1\\.0\\.(\\d+)$").find(tag)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+                if (o["draft"]?.jsonPrimitive?.content == "true" || o["prerelease"]?.jsonPrimitive?.content == "true") continue
+                val apk = (o["assets"] as? JsonArray)?.map { it.jsonObject }?.firstOrNull { a ->
+                    a["name"]?.jsonPrimitive?.content.orEmpty().let { it.endsWith(".apk") && it.startsWith(APK_PREFIX) }
+                } ?: continue
+                if (best == null || n > best.code) best = Info(n, "1.0.$n", apk["browser_download_url"]!!.jsonPrimitive.content,
+                    apk["size"]?.jsonPrimitive?.longOrNull ?: 0L, apk["digest"]?.jsonPrimitive?.content)
             }
-            if (arr.size < 100 || best != null) break
+            if (arr.size < 100) break
         }
+        recordError(context, null)
         best?.takeIf { it.code > BuildConfig.VERSION_CODE }
     }
 
     private fun apkFile(context: Context, info: Info) = File(context.cacheDir, "guncelleme/G-Flix-Archive-${info.code}.apk")
 
+    @Suppress("DEPRECATION")
+    private fun validate(context: Context, apk: File, expectedCode: Int? = null) {
+        val pm = context.packageManager
+        val flags = if (Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            else android.content.pm.PackageManager.GET_SIGNATURES
+        val incoming = pm.getPackageArchiveInfo(apk.absolutePath, flags)
+            ?: throw IllegalStateException("APK eksik veya bozuk; yeniden indir")
+        val installed = pm.getPackageInfo(context.packageName, flags)
+        require(incoming.packageName == context.packageName) { "Bu APK başka uygulamaya ait; kayıtlı bilgiler korunarak kurulamaz" }
+        val code = if (Build.VERSION.SDK_INT >= 28) incoming.longVersionCode else incoming.versionCode.toLong()
+        require(code > BuildConfig.VERSION_CODE && (expectedCode == null || code == expectedCode.toLong())) {
+            "APK sürümü uygun değil; daha yeni telefon sürümünü indir"
+        }
+        fun signatures(info: android.content.pm.PackageInfo): Set<String> =
+            (if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures)
+                .orEmpty().map { it.toCharsString() }.toSet()
+        val known = signatures(installed)
+        require(known.isNotEmpty() && known == signatures(incoming)) {
+            "APK imzası mevcut uygulamayla eşleşmiyor. Uygulamayı silme; aynı imzayla hazırlanmış güncelleme gerekli"
+        }
+    }
+
     suspend fun download(context: Context, info: Info): File = withContext(Dispatchers.IO) {
         val f = apkFile(context, info)
-        if (f.exists() && (info.size == 0L || f.length() == info.size)) return@withContext f
-        f.parentFile?.listFiles()?.forEach { it.delete() }
+        if (f.isFile && info.size > 0 && f.length() == info.size) {
+            if (runCatching { validate(context, f, info.code) }.isSuccess) return@withContext f
+            f.delete()
+        }
         f.parentFile?.mkdirs()
         val tmp = File(f.path + ".part")
-        context.appContainer.httpClient.newCall(Request.Builder().url(info.apkUrl).build()).execute().use { r ->
-            if (!r.isSuccessful) throw IllegalStateException("Güncelleme indirilemedi (HTTP ${r.code})")
-            tmp.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
-        }
-        tmp.renameTo(f)
-        f
+        try {
+            updateHttp.newCall(Request.Builder().url(info.apkUrl).build()).execute().use { r ->
+                if (!r.isSuccessful) throw java.io.IOException("Güncelleme indirilemedi (HTTP ${r.code})")
+                tmp.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
+            }
+            require(info.size > 0 && tmp.length() == info.size) { "APK eksik indi; yeniden denenecek" }
+            info.digest?.takeIf { it.startsWith("sha256:") }?.let { expected ->
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                tmp.inputStream().use { input ->
+                    val buffer = ByteArray(256 * 1024)
+                    while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }
+                }
+                require(digest.digest().joinToString("") { "%02x".format(it) }.equals(expected.removePrefix("sha256:"), true)) {
+                    "APK bütünlük kontrolü başarısız; yeniden indir"
+                }
+            }
+            validate(context, tmp, info.code)
+            check(tmp.renameTo(f)) { "Güncelleme dosyası kaydedilemedi" }
+            f
+        } finally { tmp.delete() }
     }
 
     fun install(context: Context, apk: File) {
+        validate(context, apk)
+        if (!context.packageManager.canRequestPackageInstalls()) {
+            val settings = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                android.net.Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            recordError(context, "G-Flix için bu kaynaktan uygulama yükleme iznini aç, ardından Şimdi Güncelle'ye dokun")
+            if ((context.applicationContext as GFlixApp).visibleActivities > 0) context.startActivity(settings)
+            else notifyConfirm(context, settings)
+            return
+        }
+        recordError(context, null)
         val pi = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
@@ -133,7 +190,7 @@ object Updater {
         val pi = PendingIntent.getActivity(context, 9001, target, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val n = NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle("G-Flix güncellemesi hazır")
-            .setContentText("Yüklemek için dokun (bir kerelik onay; sonrakiler kendiliğinden yüklenir).")
+            .setContentText("Yüklemek için dokun. Android kurulum izni veya onay isteyebilir; kayıtlı bilgilerin korunur.")
             .setContentIntent(pi).setAutoCancel(true).build()
         try { NotificationManagerCompat.from(context).notify(9001, n) } catch (_: SecurityException) { }
     }
@@ -147,9 +204,15 @@ class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             val apk = Updater.download(ctx, info)
             Updater.ready.value = info
             // Kullanılırken yükleme (uygulama kapanır): ekranda değilse şimdi, değilse çıkınca
-            if ((ctx as GFlixApp).visibleActivities == 0) Updater.install(ctx, apk)
+            val activePhoneJob = com.gflix.app.admin.AdminStore(ctx).current().tasks.any {
+                it.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG && it.status != com.gflix.app.admin.TaskStatus.DONE
+            }
+            if ((ctx as GFlixApp).visibleActivities == 0 && !activePhoneJob) Updater.install(ctx, apk)
             Result.success()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
+            Updater.recordError(ctx, e.message ?: "Güncelleme tamamlanamadı")
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
     }
@@ -166,8 +229,19 @@ class UpdateReceiver : BroadcastReceiver() {
                 if (app.visibleActivities > 0 && confirm != null) context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 else Updater.notifyConfirm(context, confirm)
             }
-            PackageInstaller.STATUS_SUCCESS -> Updater.ready.value = null
-            else -> Unit
+            PackageInstaller.STATUS_SUCCESS -> { Updater.ready.value = null; Updater.recordError(context, null) }
+            else -> {
+                val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                val message = when (status) {
+                    PackageInstaller.STATUS_FAILURE_CONFLICT -> "Güncelleme imzası mevcut uygulamayla uyumlu değil; uygulamayı silmeden uygun APK'yı kullan"
+                    PackageInstaller.STATUS_FAILURE_STORAGE -> "Kurulum için telefonda boş alan aç ve yeniden dene"
+                    PackageInstaller.STATUS_FAILURE_BLOCKED -> "Android kurulumu engelledi; G-Flix için uygulama yükleme iznini kontrol et"
+                    PackageInstaller.STATUS_FAILURE_ABORTED -> "Kurulum iptal edildi; istediğinde Şimdi Güncelle ile yeniden deneyebilirsin"
+                    PackageInstaller.STATUS_FAILURE_INVALID -> "APK geçersiz veya eksik; yeniden indir"
+                    else -> "Android güncellemeyi tamamlayamadı (kod $status); yeniden dene"
+                }
+                Updater.recordError(context, message)
+            }
         }
     }
 }

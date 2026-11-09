@@ -154,6 +154,9 @@ object WishList {
         showWindow = prefs.getBoolean("showWindow", false)
         bgRun = prefs.getBoolean("bgRun", true)
         pcShare = prefs.getBoolean("pcShare", true)
+        // One-time upgrade to phone-only operation; keep every credential, site and queue entry.
+        if (!prefs.getBoolean("phonePipelineV2", false))
+            prefs.edit().putBoolean("phoneArchive", true).putBoolean("phonePipelineV2", true).apply()
         phoneArchive = prefs.getBoolean("phoneArchive", true)
         night = prefs.getBoolean("night", false)
         gapSec = prefs.getInt("gapSec", 20)
@@ -836,7 +839,7 @@ object WishList {
                 holdWake(false)
                 // liste boş: sırası gelen kategori okunur (başlatılmışsa)
                 val due = sugDueCat(System.currentTimeMillis())
-                if (started && due != null && PcServer.configured && CaptureEngine.canWish()) runCatching { sugStep(due) }
+                if (started && due != null && (phoneArchive || PcServer.configured) && CaptureEngine.canWish()) runCatching { sugStep(due) }
                 continue
             }
             // "işlemde" kalıp sahipsiz kalan (takılan) iş sıraya döner
@@ -979,7 +982,7 @@ object WishList {
                 else -> {
                     val label = when (task.status) {
                         TaskStatus.UPLOADING -> "archive.org'a yükleniyor"
-                        TaskStatus.PROCESSING -> "birleştiriliyor veya arşivde doğrulanıyor"
+                        TaskStatus.PROCESSING -> com.gflix.app.archive.PhoneProgress.label(task.phase)
                         else -> "indiriliyor / hazırlanıyor"
                     }
                     now = "📱 $name: $label · ${task.message.orEmpty()}"
@@ -987,7 +990,10 @@ object WishList {
             }
         }
         save()
-        return items.any { it.pcJid.startsWith("phone:") || it.eps.any { e -> e.pcJid.startsWith("phone:") } }
+        // Includes tasks created just before the capture-to-wishlist handoff was interrupted.
+        return AdminStore(app).current().tasks.any {
+            it.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG && it.status != TaskStatus.DONE
+        }
     }
 
     // ---------------------------------------------------------------- 🖥️ bilgisayara verilen işler
@@ -1346,7 +1352,9 @@ fun WishListDialog(onDismiss: () -> Unit) {
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 item(key = "intro") {
                     Column {
-                        Text(if (WishList.pcShare)
+                        Text(if (WishList.phoneArchive)
+                            "Bu telefon sırayla indirir, ses ve altyazıları tek MKV'de toplar; arşiv doğrulamasından sonra dosyaları silip sıradakine geçer."
+                            else if (WishList.pcShare)
                             "TMDB'den film veya dizi seç; sayfasını bulur. Bilgisayar izinli videoyu indirir, archive.org'a yükler, doğrular ve kataloğa ekler. Başarısız olursa sıraya alıp tekrar dener."
                             else "TMDB'den seç; sayfayı sitede kendisi bulur. Arka planda bağlantıyı yakalar; gerektiğinde tekrar dener.",
                             color = GColors.TextSecondary, fontSize = 12.sp, lineHeight = 16.sp)
@@ -1440,7 +1448,8 @@ fun WishListDialog(onDismiss: () -> Unit) {
                         }
                         if (!WishList.started) Text("Sırayı ↑ ↓ ile ayarla, sonra ▶ Başlat. Liste yukarıdan aşağı işler.", color = GColors.TextSecondary, fontSize = 11.sp)
                         if (WishList.now.isNotBlank()) Text(WishList.now, color = GColors.Match, fontSize = 12.sp)
-                        if (WishList.pcNow.isNotBlank()) Text(WishList.pcNow, color = GColors.Match, fontSize = 12.sp)
+                        if (!WishList.phoneArchive && WishList.pcNow.isNotBlank()) Text(WishList.pcNow, color = GColors.Match, fontSize = 12.sp)
+                        if (WishList.phoneArchive) PhoneQueueProgress()
                         if (WishList.phoneArchive) Text("📱 Bu telefon sırayla indirir ve arşivler. Stüdyo Ayarları'nda arşiv anahtarları ve hak onayı gerekli.", color = GColors.TextSecondary, fontSize = 12.sp)
                         else if (!PcServer.configured) Text("⚠ Bilgisayar bağlı değil; liste bilgisayar bağlanınca çalışır.", color = GColors.TextSecondary, fontSize = 12.sp)
                         else if (!CaptureEngine.hasSite()) Text("⚠ Önce Sayfadan Yakala'da kaynak siteyi aç; liste o siteyi kullanır. archive.org için ayrıca bilgisayarda arşivleme etkin olmalı.", color = GColors.TextSecondary, fontSize = 12.sp)

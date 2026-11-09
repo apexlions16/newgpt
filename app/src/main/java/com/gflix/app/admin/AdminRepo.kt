@@ -31,8 +31,14 @@ class AdminRepo(private val context: Context) {
         tasks.forEach { enqueue(it) }
     }
 
-    private fun enqueue(t: UploadTask) =
-        if (t.archiveItem != null) com.gflix.app.archive.ArchiveUploadWorker.enqueue(context, t.id) else UploadWorker.enqueue(context, t.id)
+    private fun enqueue(t: UploadTask) {
+        when {
+            t.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG && t.files.isEmpty() ->
+                com.gflix.app.archive.PhoneArchiveWorker.retry(context, t.id)
+            t.archiveItem != null -> com.gflix.app.archive.ArchiveUploadWorker.enqueue(context, t.id)
+            else -> UploadWorker.enqueue(context, t.id)
+        }
+    }
 
     /** Yeni düzen: içerikler archive.org'da (katalog telefonda tutulur, archive.org'a yazılır) */
     suspend fun archive(): Boolean = store.current().archive
@@ -90,6 +96,8 @@ class AdminRepo(private val context: Context) {
         if (task.archiveItem != null) {
             // archive.org'a yarım kalmış dosyalar item'da kalır; yeniden yüklenirse üzerine yazılır
             com.gflix.app.archive.ArchiveUploadWorker.cancel(context, task.id)
+            if (task.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG)
+                androidx.work.WorkManager.getInstance(context).cancelUniqueWork("phone-archive-${task.id}")
             releaseUris(task)
             store.update { s -> s.copy(tasks = s.tasks.filterNot { it.id == task.id }) }
             return

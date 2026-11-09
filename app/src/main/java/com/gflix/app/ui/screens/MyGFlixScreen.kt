@@ -300,6 +300,8 @@ fun SettingsScreen(onBack: () -> Unit) {
             SettingsLabel("Hakkında")
             SettingsValue("Sürüm", BuildConfig.VERSION_NAME)
             val ready by com.gflix.app.update.Updater.ready.collectAsState()
+            val updateError by com.gflix.app.update.Updater.error.collectAsState()
+            updateError?.let { Text(it, color = Color(0xFFFF6B6B), fontSize = 12.sp) }
             val ctx = androidx.compose.ui.platform.LocalContext.current
             var checking by remember { mutableStateOf<String?>(null) }
             SettingsValue("Güncelleme", ready?.let { "Yeni sürüm hazır: ${it.name}" } ?: checking ?: "Kendiliğinden (Wi-Fi'de denetlenir, uygulama kapalıyken yüklenir)")
