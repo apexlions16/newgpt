@@ -121,6 +121,8 @@ data class AdminState(
     val iaAccess: String? = null,
     val iaSecret: String? = null,
     val iaPrefix: String? = null,
+    /** Explicit permission to publish these non-DRM files publicly on Internet Archive. */
+    val archiveRightsConfirmed: Boolean = false,
     /** Kataloğun archive.org'a son yazılışı ("✓ 12:03" ya da hata) */
     val iaCatalogNote: String? = null,
 ) {
