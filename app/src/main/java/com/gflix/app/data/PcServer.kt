@@ -139,6 +139,11 @@ object PcServer {
     /** Stüdyo özeti: yapım sayıları, izleme ve geçen veri, bilgisayarda kaplanan yer */
     suspend fun stats(): JsonObject = withContext(Dispatchers.IO) { AppJson.parseToJsonElement(call(slow, "/api/stats")).jsonObject }
 
+    /** İstek listesi ile tetiklenen indirme → archive.org aktarım kuyruğu. */
+    suspend fun archiveJobs(): JsonObject = withContext(Dispatchers.IO) {
+        AppJson.parseToJsonElement(call(slow, "/api/archive/jobs")).jsonObject
+    }
+
     /** Canlı kayıt satırları (after: son görülen sıra no) */
     suspend fun logText(after: Long): String = withContext(Dispatchers.IO) { call(quick, "/log?after=$after") }
 
