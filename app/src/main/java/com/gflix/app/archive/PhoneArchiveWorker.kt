@@ -68,6 +68,8 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
 
     override suspend fun doWork(): Result {
         if (id.isBlank()) return Result.failure()
+        val task = store.task(id) ?: return Result.success()
+        if (task.status == TaskStatus.DONE) return Result.success()
         val queue = store.current().tasks.filter { it.tag == TAG && it.status != TaskStatus.DONE }
             .sortedBy { it.createdAt }
         if (queue.firstOrNull()?.id != id) {
@@ -75,15 +77,13 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             return Result.retry()
         }
         val raw = File(folder, "capture.json")
-        if (!raw.isFile) return Result.failure()
-        val task = store.task(id) ?: return Result.failure()
-        if (task.status == TaskStatus.DONE) return Result.success()
         // WorkManager may redeliver this worker after a process death between handoffs.
         if (task.files.isNotEmpty()) {
             if (task.processingSince > 0) ArchiveVerifyWorker.enqueue(applicationContext, id, 0)
             else ArchiveUploadWorker.enqueue(applicationContext, id)
             return Result.success()
         }
+        if (!raw.isFile) return fail("Kaynak kaydı bulunamadı; kaynak sayfasını yeniden yakala")
         val admin = store.current()
         if (!admin.archive || !admin.archiveRightsConfirmed) return fail("İzin onayı ve archive.org anahtarları Stüdyo Ayarları'nda gerekli")
         setForeground(foreground("Video ve sesler telefona indiriliyor"))
@@ -132,7 +132,8 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
     }
 
     private suspend fun fail(message: String): Result {
-        store.updateTask(id) { it.copy(status = TaskStatus.FAILED, message = message.take(240)) }
+        store.updateTask(id) { it.copy(status = TaskStatus.FAILED, message = message.take(240), percent = -1,
+            updatedAt = System.currentTimeMillis()) }
         return Result.failure()
     }
 
@@ -143,7 +144,7 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         if (streams.isEmpty()) throw IOException("DRM korumasız HLS video kaynağı bulunamadı")
         // Prefer the master playlist over a single rendition: it exposes all audio languages.
         val best = streams.maxWithOrNull(compareBy<JsonObject> {
-            text(it, "text").contains("#EXT-X-MEDIA:TYPE=AUDIO")
+            Regex("#EXT-X-MEDIA:[^\\r\\n]*TYPE=AUDIO").containsMatchIn(text(it, "text"))
         }.thenBy {
             text(it, "duration").toDoubleOrNull() ?: 0.0
         })!!
@@ -166,11 +167,6 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             text(obj, "duration").toDoubleOrNull() ?: Regex("#EXTINF:([0-9.]+)")
                 .findAll(text(obj, "text")).sumOf { it.groupValues[1].toDoubleOrNull() ?: 0.0 }
         } ?: 0.0).times(1000).toLong()
-        val args = mutableListOf("-hide_banner", "-nostdin", "-y", "-loglevel", "warning",
-            "-rw_timeout", "30000000")
-        if (headers.isNotEmpty()) args += listOf("-headers", headers)
-        args += listOf("-i", url)
-
         // Every available audio stream in the master playlist, and its first/highest video.
         // Alternative video resolutions are intentionally not duplicated.
         val subtitles = (capture["subs"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
@@ -183,17 +179,13 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             val f = File(folder, "sub-$i.$ext")
             f.writeText(contents)
             subFiles.add(f)
-            args += listOf("-i", f.absolutePath)
         }
-        args += listOf("-map", "0:v:0", "-map", "0:a?", "-map", "0:s?")
-        subFiles.indices.forEach { j -> args += listOf("-map", "${j + 1}:0") }
-        args += listOf("-c:v", "copy", "-c:a", "copy", "-c:s", "srt",
-            "-max_muxing_queue_size", "2048", "-f", "matroska", target.absolutePath)
+        val args = PhoneMux.arguments(url, headers, subFiles, target)
         store.updateTask(id) { it.copy(status = TaskStatus.PROCESSING, phase = "download", percent = -1,
             message = "Kaynak açılıyor · ses ve altyazılar hazırlanıyor", updatedAt = System.currentTimeMillis()) }
         val completed = CompletableDeferred<com.arthenica.ffmpegkit.FFmpegSession>()
         val time = AtomicLong(0)
-        val session = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray(),
+        val session = FFmpegKit.executeWithArgumentsAsync(args,
             { completed.complete(it) }, { /* Never persist source URLs, cookies or headers from FFmpeg logs. */ },
             { stats -> time.set(stats.time.toLong()) })
         val began = android.os.SystemClock.elapsedRealtime()

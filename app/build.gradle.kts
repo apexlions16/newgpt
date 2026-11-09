@@ -22,6 +22,7 @@ android {
         applicationId = "com.gflix.archive.next"
         minSdk = 26
         targetSdk = 35
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = cfg("GFLIX_VERSION_CODE", "1").toInt()
         versionName = cfg("GFLIX_VERSION_NAME", "1.0.0")
 
@@ -124,4 +125,6 @@ dependencies {
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
 
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("junit:junit:4.13.2")
 }

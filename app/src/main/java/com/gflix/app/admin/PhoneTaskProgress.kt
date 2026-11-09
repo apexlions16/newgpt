@@ -22,7 +22,9 @@ internal fun PhoneTaskProgress(task: UploadTask) {
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Text(PhoneProgress.label(task.phase) + if (task.percent >= 0) " · %${task.percent}" else "",
             color = GColors.TextSecondary, fontSize = 12.sp)
-        if (task.percent >= 0) LinearProgressIndicator(
+        if (task.status in setOf(TaskStatus.FAILED, TaskStatus.SERVER_FAILED)) {
+            Text("İşlem durdu · kaynaklar korunuyor", color = GColors.TextSecondary, fontSize = 12.sp)
+        } else if (task.percent >= 0) LinearProgressIndicator(
             progress = { task.percent.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth())
         else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         Text(task.message ?: "Hazırlanıyor…", color = GColors.TextSecondary, fontSize = 12.sp)

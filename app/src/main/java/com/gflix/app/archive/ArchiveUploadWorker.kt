@@ -400,7 +400,12 @@ class ArchiveVerifyWorker(context: Context, params: WorkerParameters) : Coroutin
                     }
                     val remoteCatalog = client.filesInfo(ArchiveSource.catalogItem())["catalog.json"]
                     if (!PhoneProgress.verified(task.catalogSize, task.catalogMd5, remoteCatalog)) {
-                        if (minutes >= 24 * 60) throw IOException("Katalog 24 saatte doğrulanamadı; dosyalar telefonda korundu")
+                        if (minutes >= 24 * 60) {
+                            store.updateTask(id) { it.copy(status = TaskStatus.FAILED,
+                                message = "Katalog 24 saatte doğrulanamadı; dosyalar telefonda korundu. Tekrar dene ile kontrolü sürdür.",
+                                updatedAt = System.currentTimeMillis()) }
+                            return Result.success()
+                        }
                         store.updateTask(id) { it.copy(phase = "catalog", percent = -1,
                             message = "Video doğrulandı · katalog MD5 kontrolü bekleniyor · ${minutes} dk; tekrar kontrol 60 sn içinde",
                             updatedAt = System.currentTimeMillis()) }

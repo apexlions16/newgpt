@@ -619,7 +619,7 @@ object CaptureEngine {
                     val dur = if (text.contains("#EXT-X-STREAM-INF")) {
                         val vt = bestVariant(text, f.url)?.let { v -> fetchList(v)?.also { s.playlists[v] = it } }
                         // Sesler: bilgisayar aynı linkleri isteyince site reddedebilir, metinlerini şimdi al
-                        Regex("#EXT-X-MEDIA:[^\\n]*TYPE=AUDIO[^\\n]*URI=\"([^\"]+)\"").findAll(text).take(6).forEach { m ->
+                        Regex("#EXT-X-MEDIA:[^\\n]*TYPE=AUDIO[^\\n]*URI=\"([^\"]+)\"").findAll(text).forEach { m ->
                             runCatching { java.net.URI(f.url).resolve(m.groupValues[1]).toString() }.getOrNull()?.let { au ->
                                 if (!s.playlists.containsKey(au)) fetchList(au)?.let { s.playlists[au] = it }
                             }

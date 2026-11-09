@@ -8,10 +8,10 @@ on:
 permissions:
   contents: read
 
-# Tek derleme kuyruğu: ilk oluşturulan debug imza anahtarının önbelleğe kaydedilmesini bekle.
+# İmza anahtarı değişmez; yalnızca en yeni değişiklik için APK yayımla.
 concurrency:
   group: gflix-next-debug-signing
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   python:
@@ -57,7 +57,7 @@ jobs:
           GFLIX_DEBUG_KEYSTORE_PASSWORD: "gflix-next-dev-build-only"
           GFLIX_DEBUG_KEY_ALIAS: "gflix-next"
           GFLIX_DEBUG_KEY_PASSWORD: "gflix-next-dev-build-only"
-        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug assembleDebugAndroidTest
       - name: Dağıtım APK'sını hazırla ve imzasını doğrula
         run: |
           mkdir -p dist
@@ -69,6 +69,10 @@ jobs:
           name: gflix-next-debug-apk
           path: dist/*.apk
           retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-device-tests
+          path: app/build/outputs/apk/androidTest/debug/*.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -91,6 +95,10 @@ jobs:
         with:
           name: gflix-next-debug-apk
           path: new-apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-device-tests
+          path: test-apk
       - name: Kurulu 1.0.27 sürümünü getir
         env:
           GH_TOKEN: ${{ github.token }}

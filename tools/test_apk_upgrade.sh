@@ -23,3 +23,8 @@ adb shell run-as "$package" cat files/upgrade-probe | grep -q saved-admin-settin
 adb shell am start -W -n "$package/com.gflix.app.MainActivity"
 adb shell pidof "$package"
 echo 'PASS: identical signing certificate, Android update install, private settings and source files retained, app launched.'
+
+# Exercise the exact production MKV mapping and native statistics callback on Android.
+adb install -r test-apk/*.apk
+adb shell am instrument -w -r com.gflix.archive.next.test/androidx.test.runner.AndroidJUnitRunner | tee native-device-tests.txt
+grep -q '^OK (' native-device-tests.txt
