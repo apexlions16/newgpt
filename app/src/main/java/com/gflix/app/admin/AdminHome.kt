@@ -137,11 +137,27 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                 }
             }
             if (!pc) catalog?.stats?.let { st -> item { ArchiveStats(st); Spacer(Modifier.height(12.dp)) } }
-            // archive.org yükleme modu seçiliyken de TMDB istek listesi ve kategori taraması erişilebilir.
+            // archive.org ayarları varsa da eski Stüdyo'daki bilgisayar ve istek listesi araçları kaybolmasın.
             if (ia && com.gflix.app.data.PcServer.configured) item {
+                PcStatsCard()
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = onCapture, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GColors.Red, contentColor = Color.White),
+                ) { Text("🌐  Sayfadan Yakala  ·  Kaynağı aç / yenile", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
+                Spacer(Modifier.height(8.dp))
                 WishHomeButton()
                 Spacer(Modifier.height(8.dp))
                 ArchiveJobsCard()
+                Spacer(Modifier.height(8.dp))
+                YtFollowButton()
+                Spacer(Modifier.height(8.dp))
+                AddLinkButton()
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onLog, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333), contentColor = Color.White),
+                ) { Text("🖥️  Canlı Kayıt  ·  Bilgisayarda akan bütün satırlar", fontWeight = FontWeight.Bold, fontSize = 14.sp) }
                 Spacer(Modifier.height(12.dp))
             }
             if (ia) item {
