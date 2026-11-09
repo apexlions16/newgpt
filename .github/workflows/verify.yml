@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Tek derleme kuyruğu: ilk oluşturulan debug imza anahtarının önbelleğe kaydedilmesini bekle.
+concurrency:
+  group: gflix-next-debug-signing
+  cancel-in-progress: false
+
 jobs:
   python:
     runs-on: ubuntu-latest
@@ -31,7 +36,17 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      # GitHub Actions her çalışmada yeni bir debug keystore üretmesin.
+      # Böylece aynı paket kimliğindeki sonraki APK'lar verileri silmeden güncellenir.
+      - name: Test APK imzasını koru
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: gflix-next-debug-signing-v1
       - name: Birim testleri + ayrı APK
+        env:
+          GFLIX_VERSION_CODE: ${{ github.run_number }}
+          GFLIX_VERSION_NAME: 1.0.${{ github.run_number }}
         run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@v4
         if: success()
