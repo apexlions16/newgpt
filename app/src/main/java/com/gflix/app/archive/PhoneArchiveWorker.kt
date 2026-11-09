@@ -194,6 +194,15 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             return ascii.replace(Regex("[^a-z0-9]+"), "-").trim('-').take(48).ifBlank { "media" }
         }
 
+        fun retry(context: Context, jobId: String) {
+            val req = OneTimeWorkRequestBuilder<PhoneArchiveWorker>()
+                .setInputData(workDataOf(KEY_ID to jobId))
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 45, TimeUnit.SECONDS)
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork("$TAG-$jobId", ExistingWorkPolicy.REPLACE, req)
+        }
+
         /** A captured page becomes exactly one durable WorkManager job, never concurrent uploads. */
         suspend fun enqueue(context: Context, title: String, capture: JsonObject, hint: JsonObject?): String {
             val admin = AdminStore(context).current()
