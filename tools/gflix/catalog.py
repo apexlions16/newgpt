@@ -116,7 +116,12 @@ def _github_asset(st: dict | None) -> bool:
 
 def live_stream(st: dict | None) -> dict | None:
     """Kayıttaki stream → uygulamaya giden stream. Kaynağı olan: {"live": true, ...}; eski GitHub dosyalı: None."""
-    if not st or not (st.get("source") or st.get("live")):
+    if not st:
+        return None
+    # Verified archive files take precedence over old live stream references.
+    if st.get("direct") or st.get("master") or st.get("versions"):
+        return {k: v for k, v in st.items() if k not in ("source", "live")}
+    if not (st.get("source") or st.get("live")):
         return None
     out = {"live": True}
     for k in ("audio", "duration"):

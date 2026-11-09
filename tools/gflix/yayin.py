@@ -355,7 +355,7 @@ def live_catalog(c: dict, src: Sources, now: float | None = None, checks: dict |
         live_trailers(t, e, checks)
         if t.get("type") != "series":
             old = t.get("stream") or {}
-            t["stream"] = {"live": True, **{k: old[k] for k in ("audio", "duration") if old.get(k)}} if e.get("url") else None
+            t["stream"] = old if old.get("direct") else ({"live": True, **{k: old[k] for k in ("audio", "duration") if old.get(k)}} if e.get("url") else None)
             continue
         # "İlk N bölüm hazır olunca birlikte aç": yeni düzende 'hazır' = kaynağı onaylanmış (ya da bölüm kalıbı var)
         for pl in t.get("releasePlan") or []:
@@ -385,7 +385,7 @@ def live_catalog(c: dict, src: Sources, now: float | None = None, checks: dict |
             for ep in s.get("episodes") or []:
                 ok = bool((e.get("episodes") or {}).get(f"{s.get('number')}:{ep.get('number')}") or e.get("pattern"))
                 old = ep.get("stream") or {}
-                ep["stream"] = {"live": True, **{k: old[k] for k in ("audio", "duration") if old.get(k)}} if ok else None
+                ep["stream"] = old if old.get("direct") else ({"live": True, **{k: old[k] for k in ("audio", "duration") if old.get(k)}} if ok else None)
         for s_ in seasons.values():           # tamamlanmamış "birlikte aç" aralığındaki bölümler gizli
             s_["episodes"] = [x for x in s_.get("episodes") or [] if not _held(t, s_.get("number"), x.get("number") or 0, now)]
         t["seasons"] = [seasons[k] for k in sorted(seasons, key=lambda x: x or 0) if seasons[k].get("episodes")]
@@ -617,7 +617,8 @@ class Session:
 
 class Server:
     def __init__(self, workdir: Path, key: str, catalog_path: Path, tmdb_key: str = "", port: int = DEFAULT_PORT,
-                 host_name: str = "", resolver=resolve_play, items_dir: Path | None = None):
+                 host_name: str = "", resolver=resolve_play, items_dir: Path | None = None,
+                 archive_cfg: dict | None = None):
         self.workdir = workdir
         # Yapım kayıtları sadece bu bilgisayarda (adlar GitHub'a gitmez); katalog TMDB'den burada üretilir
         self.items_dir = items_dir
@@ -673,6 +674,55 @@ class Server:
         self.httpd: ThreadingHTTPServer | None = None
         app = Path(__file__).resolve().parents[2] / "tizen" / "app"
         self.tv_dir: Path | None = app if app.is_dir() else None
+        from .archive_download import ArchiveQueue
+        cfg = archive_cfg or {}
+        self.archive = ArchiveQueue(workdir, enabled=bool(cfg.get("enabled")), access=cfg.get("access", ""),
+                                    secret=cfg.get("secret", ""), prefix=cfg.get("prefix", ""),
+                                    resolve_media=self._archive_resolve, completed=self._archive_completed, log=log)
+
+    def _archive_resolve(self, job: dict) -> Resolved:
+        t = self.find_title(job["item_id"]) or {}
+        cap = self.captures.get(job["item_id"], job.get("season"), job.get("episode"))
+        return self.resolver(job["url"], "series" if job.get("season") is not None else "movie",
+                             t.get("tmdbId"), job.get("season"), job.get("episode"), self.tmdb_key,
+                             capture=cap, log=lambda *_: None)
+
+    def _archive_completed(self, job: dict, result: dict, archive) -> None:
+        if not self.items_dir:
+            raise RuntimeError("Yerel katalog dizini yok")
+        item_id, se, ep = job["item_id"], job.get("season"), job.get("episode")
+        path = self.items_dir / f"{item_id}.json"
+        item = json.loads(path.read_text(encoding="utf-8"))
+        video = {"parts": [result["video_url"]], "sizes": [result["video_size"]]}
+        stream = {"direct": {"video": video, "audio": [], "videoAudio": []},
+                  "subtitles": result["subs"], "duration": result.get("duration")}
+        if se is None:
+            item["stream"] = stream
+        else:
+            episodes = item.setdefault("episodes", [])
+            row = next((x for x in episodes if x.get("season") == se and x.get("episode") == ep), None)
+            if row is None:
+                row = {"season": se, "episode": ep}
+                episodes.append(row)
+            row["stream"] = stream
+            row["added"] = int(time.time())
+        item["updated"] = int(time.time())
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(item, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp.replace(path)
+        self.rebuild(wait=True)
+        if not self.catalog_path.is_file():
+            raise RuntimeError("Katalog oluşturulamadı")
+        archive.upload_file(f"{archive.prefix}-katalog", "catalog.json", self.catalog_path,
+                            title="G-Flix içerik kataloğu", kind="data")
+
+    def pccap_status(self, job: dict) -> dict:
+        out = {k: v for k, v in job.items() if k != "hint"}
+        if job.get("archiveJob"):
+            state = self.archive.status(job["archiveJob"])
+            out["state"] = "ok" if state.get("state") == "done" else "black" if state.get("state") == "failed" else "work"
+            out["note"] = state.get("note", "")
+        return out
 
     # ---- katalog (bilgisayarda üretilir)
     def needs_build(self) -> bool:
@@ -1000,6 +1050,7 @@ class Server:
             r = self.approve([pid])
             if r and r[0].get("ok"):
                 rec["approved"] = True
+                rec["archiveJob"] = r[0].get("archiveJob")
         return rec
 
     def hint_guess(self, hint: dict) -> dict | None:
@@ -1246,8 +1297,9 @@ class Server:
                     self.pending.dirty = True
                 t = self.find_title(item_id) or {}
                 label = (t.get("title") or item_id) + (f" S{int(s_):02d}E{int(e_):02d}" if s_ is not None else "")
-                log(f"✅ yayına alındı: {label}")
-                results.append({"pid": pid, "ok": True, "id": item_id, "label": label})
+                archive_job = self.archive.enqueue(item_id, p["url"], t.get("title") or label, s_, e_, tid) if self.archive.enabled else ""
+                log(f"✅ kaynağa bağlandı: {label}" + (" — archive.org'a indirilecek" if archive_job else ""))
+                results.append({"pid": pid, "ok": True, "id": item_id, "label": label, "archiveJob": archive_job})
             except Exception as ex:  # noqa: BLE001
                 results.append({"pid": pid, "ok": False, "error": str(ex)[:200]})
         self.pending.flush()
@@ -1543,8 +1595,10 @@ class Server:
             jid, x = job
             x["state"], x["at"] = "work", time.time()
         url = x["url"]
-        log(f"🖥️ bilgisayarda yakalanıyor: {url[:70]}")
+        log(f"🖥️ indirme için kaynak bulunuyor: {url[:70]}")
         try:
+            if not self.archive.enabled:
+                raise RuntimeError("archive.org anahtarları ve otomatik yükleme onayı bilgisayarda ayarlanmamış")
             with self.site_slot:
                 cap = self.capture_fn(url, log, timeout=180, visible=self.pccap_visible(), gentle=True, ghost=True, stay=10)
             longest = max((getattr(cap, "durations", {}) or {}).values(), default=0.0)
@@ -1554,9 +1608,22 @@ class Server:
                 if d:
                     why += f" · {d.get('responses', 0)} istek görüldü" + (f" · oynatıcı reddedildi: {', '.join(d['frame_errors'][:2])}" if d.get("frame_errors") else "")
                 raise RuntimeError(why)
-            rec = self.queue_link(url, cap.title or cap.og_title or url, resolve.capture_to_json(cap), hint=x.get("hint"))
+            hint = x.get("hint") or {}
+            if not hint.get("tmdb"):
+                raise RuntimeError("İstek listesinde TMDB eşleştirmesi gerekli")
+            rec = self.queue_link(url, cap.title or cap.og_title or url, resolve.capture_to_json(cap), hint=hint)
+            if rec.get("approved"):
+                archive_job = rec.get("archiveJob")
+            else:
+                result = self.approve([rec["pid"]], hint["tmdb"], hint.get("season"), hint.get("episode"))
+                if not result or not result[0].get("ok"):
+                    raise RuntimeError((result[0].get("error") if result else None) or "TMDB eşleştirmesi başarısız")
+                archive_job = result[0].get("archiveJob")
+            if not archive_job:
+                raise RuntimeError("archive.org indirme işi başlatılamadı")
             with self.pccap_lock:
-                x.update(state="ok", note=f"alındı ({round(longest / 60)} dk)", pid=rec["pid"], at=time.time())
+                x.update(state="work", note="video indiriliyor ve archive.org'a aktarılıyor",
+                         archiveJob=archive_job, pid=rec["pid"], at=time.time())
         except Exception as e:  # noqa: BLE001
             with self.pccap_lock:
                 x.update(state="black", note=str(e)[:160], at=time.time())
@@ -2281,10 +2348,12 @@ class Server:
 
     # ---- HTTP
     def start(self) -> None:
+        self.archive.start()
         self.httpd = _Http(("0.0.0.0", self.port), _handler(self))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def stop(self) -> None:
+        self.archive.stop()
         if self.httpd:
             self.httpd.shutdown()
             self.httpd.server_close()
@@ -2453,6 +2522,10 @@ def _handler(srv: Server):
                     return self._j(200, {**srv.alerts(), "pending": len(srv.pending_list()), "news": len(srv.news.data.get("items") or [])})
                 if parts == ["api", "pending"]:
                     return self._j(200, {"items": srv.pending_list()})
+                if parts == ["api", "archive", "jobs"]:
+                    with srv.archive.lock:
+                        return self._j(200, {"enabled": srv.archive.enabled,
+                                             "jobs": [{"key": k, **v} for k, v in srv.archive.jobs.items()]})
                 if parts == ["api", "wish"]:
                     return self._j(200, srv.wish_view())
                 if parts == ["api", "wish", "cmds"]:
@@ -2688,7 +2761,7 @@ def _handler(srv: Server):
                                          "visible": srv.pccap_visible()})
                 if parts == ["api", "pccap", "status"]:
                     with srv.pccap_lock:
-                        return self._j(200, {"jobs": {j: {k: v for k, v in x.items() if k != "hint"} for j, x in srv.pccap.items()
+                        return self._j(200, {"jobs": {j: srv.pccap_status(x) for j, x in srv.pccap.items()
                                                       if j in set(b.get("jids") or [])}, "visible": srv.pccap_visible(),
                                              "busy": any(x["state"] in ("wait", "work") for x in srv.pccap.values())})
                 if parts == ["api", "follows", "add"]:
