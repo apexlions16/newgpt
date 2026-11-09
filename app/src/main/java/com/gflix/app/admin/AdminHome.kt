@@ -299,6 +299,7 @@ fun AdminSettingsScreen(onBack: () -> Unit, firstTime: Boolean = false) {
     var iaAccess by remember { mutableStateOf("") }
     var iaSecret by remember { mutableStateOf("") }
     var iaPrefix by remember { mutableStateOf("") }
+    var rightsConfirmed by remember { mutableStateOf(false) }
     var token by remember { mutableStateOf("") }
     var tmdbKey by remember { mutableStateOf("") }
     var showGitHub by remember { mutableStateOf(false) }
@@ -310,6 +311,7 @@ fun AdminSettingsScreen(onBack: () -> Unit, firstTime: Boolean = false) {
         iaAccess = com.gflix.app.archive.SecretBox.open(s.iaAccess).orEmpty()
         iaSecret = com.gflix.app.archive.SecretBox.open(s.iaSecret).orEmpty()
         iaPrefix = s.iaPrefix ?: com.gflix.app.archive.ArchiveSource.prefix
+        rightsConfirmed = s.archiveRightsConfirmed
         token = s.writeToken.orEmpty(); tmdbKey = s.tmdbKey.orEmpty(); showGitHub = token.isNotBlank(); loaded = true
     }
     val prefix = com.gflix.app.archive.ArchiveSource.normalize(iaPrefix)
@@ -342,6 +344,11 @@ fun AdminSettingsScreen(onBack: () -> Unit, firstTime: Boolean = false) {
                 else "Item'lar: $prefix-katalog, $prefix-movie-…, $prefix-series-…-s01 · İzleyici telefonlara bu adı gir: $prefix",
                 Modifier.padding(top = 6.dp))
             Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                androidx.compose.material3.Checkbox(checked = rightsConfirmed, onCheckedChange = { rightsConfirmed = it })
+                Text("Yükleyeceğim videoları herkese açık yayımlama hakkına sahibim; DRM korumalarını aşmayacağım.",
+                    color = GColors.TextSecondary, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            }
             AdminSection("TMDB")
             OutlinedTextField(
                 value = tmdbKey, onValueChange = { tmdbKey = it }, label = { Text("TMDB anahtarı") }, singleLine = true,
@@ -375,6 +382,7 @@ fun AdminSettingsScreen(onBack: () -> Unit, firstTime: Boolean = false) {
                                     iaAccess = if (iaFilled) com.gflix.app.archive.SecretBox.seal(iaAccess.trim()) else null,
                                     iaSecret = if (iaFilled) com.gflix.app.archive.SecretBox.seal(iaSecret.trim()) else null,
                                     iaPrefix = prefix.ifBlank { null },
+                                    archiveRightsConfirmed = rightsConfirmed,
                                     writeToken = token.trim().ifBlank { null },
                                     tmdbKey = tmdbKey.trim().ifBlank { null },
                                 )
