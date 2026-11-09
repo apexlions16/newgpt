@@ -945,7 +945,7 @@ object WishList {
                         val next = t + backoff(0)
                         if (e != null) { e.state = "retry"; e.pcJid = ""; e.nextAt = next; e.note = "🖥️ $note; ${hhmm(next)}'de tekrar · ${e.tries}. deneme" }
                         else { w.state = "retry"; w.pcJid = ""; w.nextAt = next; w.note = "🖥️ $note; ${hhmm(next)}'de tekrar · ${w.tries}. deneme" }
-                        warnBlack("🖥️ $lbl")
+                        black = "⚠️ $lbl: bilgisayarda indirme veya archive.org yüklemesi başarısız. $note · ${hhmm(next)}'de yeniden denenecek."
                     }
                     "lost" -> { if (e != null) { e.state = "wait"; e.pcJid = "" } else { w.state = "wait"; w.pcJid = "" } }   // bilgisayar yeniden başladı
                     else -> pcNow = "☁️ $lbl: " + note.ifBlank { if (state == "work") "indiriliyor / yükleniyor" else "sırada" }
@@ -1235,7 +1235,9 @@ fun WishListDialog(onDismiss: () -> Unit) {
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 item(key = "intro") {
                     Column {
-                        Text("TMDB'den seç; sayfayı sitede kendisi bulur, arkada yakalar. Siyah ekranda ayarlı aralıkla alana kadar tekrar dener.",
+                        Text(if (WishList.pcShare)
+                            "TMDB'den film veya dizi seç; sayfasını bulur. Bilgisayar izinli videoyu indirir, archive.org'a yükler, doğrular ve kataloğa ekler. Başarısız olursa sıraya alıp tekrar dener."
+                            else "TMDB'den seç; sayfayı sitede kendisi bulur. Arka planda bağlantıyı yakalar; gerektiğinde tekrar dener.",
                             color = GColors.TextSecondary, fontSize = 12.sp, lineHeight = 16.sp)
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
                             OutlinedTextField(q, { q = it }, singleLine = true, colors = gTextFieldColors(), placeholder = { Text("Film ya da dizi adı (TMDB)") },
@@ -1329,7 +1331,7 @@ fun WishListDialog(onDismiss: () -> Unit) {
                         if (WishList.now.isNotBlank()) Text(WishList.now, color = GColors.Match, fontSize = 12.sp)
                         if (WishList.pcNow.isNotBlank()) Text(WishList.pcNow, color = GColors.Match, fontSize = 12.sp)
                         if (!PcServer.configured) Text("⚠ Bilgisayar bağlı değil; liste bilgisayar bağlanınca çalışır.", color = GColors.TextSecondary, fontSize = 12.sp)
-                        else if (!CaptureEngine.hasSite()) Text("⚠ Önce Sayfadan Yakala'da siteyi bir kez aç; liste o siteyi kullanır.", color = GColors.TextSecondary, fontSize = 12.sp)
+                        else if (!CaptureEngine.hasSite()) Text("⚠ Önce Sayfadan Yakala'da kaynak siteyi aç; liste o siteyi kullanır. archive.org için ayrıca bilgisayarda arşivleme etkin olmalı.", color = GColors.TextSecondary, fontSize = 12.sp)
                     }
                 }
                 // 👁 Arka plandaki tarayıcı: liste çalışırken görünür; oynatıcıya kendin de dokunabilirsin (gizlenebilir)
@@ -1461,9 +1463,10 @@ fun WishListDialog(onDismiss: () -> Unit) {
 fun BlackBanner() {
     var msg by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF3A1F1F)).padding(8.dp)) {
+        val transferError = WishList.black.startsWith("⚠️")
         Text(WishList.black, color = Color.White, fontSize = 12.sp)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = {
+            if (!transferError) TextButton(onClick = {
                 CaptureEngine.clearBrowserData { msg = it; WishList.cleared() }
             }) { Text("🧹 Temizle", color = Color.White, fontWeight = FontWeight.Bold) }
             TextButton(onClick = { WishList.cleared() }) { Text("Kapat", color = GColors.TextSecondary) }
