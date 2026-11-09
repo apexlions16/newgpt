@@ -36,18 +36,38 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
-      # GitHub Actions her çalışmada yeni bir debug keystore üretmesin.
-      # Böylece aynı paket kimliğindeki sonraki APK'lar verileri silmeden güncellenir.
-      - name: Test APK imzasını koru
-        uses: actions/cache@v4
+      # Do not put this private test key into the public repo or change it between builds.
+      - name: Önceki test APK imzasını getir
+        id: signing-cache
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.android/debug.keystore
-          key: gflix-next-debug-signing-v1
+          path: .signing/gflix-next-debug.jks
+          key: gflix-next-stable-test-key-2026-v1
+      - name: Yeni test anahtarını yalnızca ilk sefer oluştur
+        env:
+          SIGNING_PASSWORD: "gflix-next-dev-build-only"
+        run: |
+          mkdir -p .signing
+          if [ ! -s .signing/gflix-next-debug.jks ]; then
+            keytool -genkeypair -noprompt -storetype JKS -alias gflix-next -keyalg RSA -keysize 3072 \
+              -validity 10000 -dname "CN=G-Flix Next Dev,OU=Development,O=G-Flix,C=TR" \
+              -keystore .signing/gflix-next-debug.jks -storepass "$SIGNING_PASSWORD" -keypass "$SIGNING_PASSWORD"
+          fi
       - name: Birim testleri + ayrı APK
         env:
           GFLIX_VERSION_CODE: ${{ github.run_number }}
           GFLIX_VERSION_NAME: 1.0.${{ github.run_number }}
+          GFLIX_DEBUG_KEYSTORE: ${{ github.workspace }}/.signing/gflix-next-debug.jks
+          GFLIX_DEBUG_KEYSTORE_PASSWORD: "gflix-next-dev-build-only"
+          GFLIX_DEBUG_KEY_ALIAS: "gflix-next"
+          GFLIX_DEBUG_KEY_PASSWORD: "gflix-next-dev-build-only"
         run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Test imzasını sonraki sürümler için sakla
+        if: success() && steps.signing-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .signing/gflix-next-debug.jks
+          key: gflix-next-stable-test-key-2026-v1
       - uses: actions/upload-artifact@v4
         if: success()
         with:
