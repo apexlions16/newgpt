@@ -74,7 +74,13 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             val snapshot = AppJson.parseToJsonElement(raw.readText()).jsonObject
             val media = snapshot["capture"] as? JsonObject ?: throw IOException("Yakalama verileri yok")
             val video = File(folder, "video.mkv")
-            if (!video.isFile || video.length() < 1024) remux(media, video)
+            if (!video.isFile || video.length() < 1024) {
+                // Atomic rename: a killed ffmpeg job must never look like a completed video.
+                val partial = File(folder, "download.partial.mkv")
+                partial.delete()
+                remux(media, partial)
+                if (!partial.renameTo(video)) throw IOException("MKV tamamlandı ama atomik kayıt yapılamadı")
+            }
             if (!video.isFile || video.length() < 1024) throw IOException("Birleştirilmiş video boş")
             val file = task.files.firstOrNull()
             val name = file?.assetName ?: remoteName(task)
