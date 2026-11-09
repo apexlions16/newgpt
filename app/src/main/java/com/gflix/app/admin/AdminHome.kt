@@ -109,8 +109,9 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                 item { PendingCard() }
                 item { DeadLinksCard() }
             } else item {
-                Hint("🖥️ Bilgisayar bağlantısı kurulmadı. Profil → Bilgisayar bağlantısı bölümünden eşleştir. " +
-                    "İstek listesi ve sayfa araçlarına buradan erişebilirsin; indirme ve arşivleme için bilgisayar gerekir.")
+                Hint(if (WishList.phoneArchive)
+                    "📱 Telefonla arşivleme açık. Sayfadan Yakala veya İstek Listesi üzerinden sıralı indirme başlatabilirsin. Arşivleme için Stüdyo Ayarları'nda anahtarları ve hak onayını kaydet."
+                    else "🖥️ Bilgisayar bağlantısı kurulmadı. Profil → Bilgisayar bağlantısı bölümünden eşleştir.")
                 Spacer(Modifier.height(12.dp))
             }
             item {
@@ -121,7 +122,7 @@ fun AdminHomeScreen(onBack: () -> Unit, onUpload: () -> Unit, onEditTitle: (Stri
                     Spacer(Modifier.height(8.dp))
                     WishHomeButton()
                     Spacer(Modifier.height(8.dp))
-                    ArchiveJobsCard()
+                    if (WishList.phoneArchive) PhoneArchiveJobsCard() else ArchiveJobsCard()
                     Spacer(Modifier.height(8.dp))
                     YtFollowButton()
                     Spacer(Modifier.height(8.dp))
@@ -731,6 +732,36 @@ private fun ArchiveStats(st: com.gflix.app.data.CatalogStats) {
             "Filmler + bölümler ${size(st.contentBytes)} · ${st.trailers} fragman ${size(st.trailerBytes)}" + if (st.comingSoon > 0) " · ${st.comingSoon} yakında" else "",
             color = GColors.TextSecondary, fontSize = 12.sp,
         )
+    }
+}
+
+
+/** On-device ingest status: local queue survives app restarts and needs no PC. */
+@Composable
+private fun PhoneArchiveJobsCard() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val store = remember { AdminStore(ctx) }
+    val state by store.state.collectAsState(initial = null)
+    val jobs = state?.tasks.orEmpty().filter { it.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG }
+    val done = jobs.count { it.status == TaskStatus.DONE }
+    val failed = jobs.count { it.status == TaskStatus.FAILED }
+    val active = jobs.count { it.status != TaskStatus.DONE && it.status != TaskStatus.FAILED }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color(0xFF192632)).padding(12.dp)) {
+        Text("📱 Telefonda İndir → MKV → ☁️ archive.org", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text("$active işleniyor · $done doğrulandı ve temizlendi · $failed sorunlu",
+            color = GColors.TextSecondary, fontSize = 12.sp)
+        jobs.filter { it.status != TaskStatus.DONE }.takeLast(3).forEach { job ->
+            val label = when (job.status) {
+                TaskStatus.UPLOADING -> "Yükleniyor"
+                TaskStatus.PROCESSING -> "İşleniyor/doğrulanıyor"
+                TaskStatus.FAILED -> "Tekrar denenecek"
+                else -> "Sırada/indiriliyor"
+            }
+            Text("• ${job.display} · $label" + job.message?.let { " · $it" }.orEmpty(),
+                color = Color.White, fontSize = 11.sp, maxLines = 3)
+        }
+        if (jobs.isEmpty()) Text("Sırada iş yok. İstek Listesi'nden film veya bölüm ekle.",
+            color = GColors.TextSecondary, fontSize = 12.sp)
     }
 }
 
