@@ -41,6 +41,8 @@ class PhoneMuxDeviceTest {
             assertEquals(1, streams.count { it.type == "video" })
             assertEquals(2, streams.count { it.type == "audio" })
             assertEquals(2, streams.count { it.type == "subtitle" })
+            assertEquals(setOf("tr", "en"), streams.filter { it.type == "subtitle" }
+                .map { it.tags.optString("language") }.toSet())
             assertEquals(setOf("tur", "eng"), streams.filter { it.type == "audio" }
                 .map { it.tags.optString("language") }.toSet())
         } finally { folder.deleteRecursively() }

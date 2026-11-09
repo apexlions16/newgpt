@@ -76,6 +76,13 @@ class AdminRepo(private val context: Context) {
     }
 
     suspend fun retry(task: UploadTask) {
+        if (task.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG && task.processingSince > 0 &&
+            task.files.isNotEmpty() && task.files.all { it.md5 != null }) {
+            store.updateTask(task.id) { it.copy(status = TaskStatus.PROCESSING, message = "Arşiv kontrolü yeniden başlatılıyor",
+                processingSince = System.currentTimeMillis()) }
+            com.gflix.app.archive.ArchiveVerifyWorker.enqueue(context, task.id, 0)
+            return
+        }
         when (task.status) {
             TaskStatus.SERVER_FAILED -> {
                 // Release'i taslağa çekip yeniden yayınlamak GitHub Actions'ı yeniden tetikler

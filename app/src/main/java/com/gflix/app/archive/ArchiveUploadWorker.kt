@@ -66,6 +66,15 @@ class ArchiveUploadWorker(context: Context, params: WorkerParameters) : Coroutin
         val admin = store.current()
         val task = store.task(taskId) ?: return Result.failure()
         if (task.status == TaskStatus.DONE) return Result.success()
+        if (task.tag == PhoneArchiveWorker.TAG) {
+            val first = admin.tasks.filter { it.tag == PhoneArchiveWorker.TAG && it.status != TaskStatus.DONE }
+                .minByOrNull { it.createdAt }
+            if (first?.id != taskId) return Result.retry()
+            if (task.files.isEmpty()) {
+                PhoneArchiveWorker.retry(applicationContext, taskId)
+                return Result.success()
+            }
+        }
         val item = task.archiveItem ?: return fail("archive.org item'ı belirlenmemiş")
         val (access, secret) = admin.archiveKeys() ?: return fail("archive.org anahtarları yok (Stüdyo Ayarları)")
         val client = ArchiveClient(access, secret)

@@ -156,7 +156,8 @@ object WishList {
         pcShare = prefs.getBoolean("pcShare", true)
         // One-time upgrade to phone-only operation; keep every credential, site and queue entry.
         if (!prefs.getBoolean("phonePipelineV2", false))
-            prefs.edit().putBoolean("phoneArchive", true).putBoolean("phonePipelineV2", true).apply()
+            prefs.edit().putBoolean("phoneArchive", true).putBoolean("phonePipelineV2", true)
+                .putInt("titleGapMin", 0).putLong("restUntil", 0).apply()
         phoneArchive = prefs.getBoolean("phoneArchive", true)
         night = prefs.getBoolean("night", false)
         gapSec = prefs.getInt("gapSec", 20)
@@ -972,9 +973,7 @@ object WishList {
                     if (next == 0L) {
                         if (e == null) w.nextAt = t + backoff(w.tries) else e.nextAt = t + backoff(e.tries)
                     } else if (next <= t) {
-                        AdminStore(app).updateTask(taskId) { it.copy(status = TaskStatus.QUEUED, message = "Yeniden deneniyor") }
-                        if (task.files.isEmpty()) com.gflix.app.archive.PhoneArchiveWorker.retry(app, taskId)
-                        else com.gflix.app.archive.ArchiveUploadWorker.enqueue(app, taskId)
+                        AdminRepo(app).retry(task)
                         if (e == null) w.nextAt = t + backoff(w.tries) else e.nextAt = t + backoff(e.tries)
                     }
                     now = "⚠ $name: ${task.message.orEmpty()} · aynı dosyalar korunuyor, yeniden denenecek"

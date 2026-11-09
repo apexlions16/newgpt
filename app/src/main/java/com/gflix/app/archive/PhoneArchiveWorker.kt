@@ -107,10 +107,10 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             if (tracks.none { it.type == "video" }) throw IOException("MKV içinde video izi yok")
             val manifest = task.manifest.copy(size = video.length(), fileName = name, parts = listOf(name),
                 audio = tracks.filter { it.type == "audio" }.map {
-                    com.gflix.app.admin.TrackSel(it.index.toInt(), it.tags?.optString("language", "und") ?: "und")
+                    com.gflix.app.admin.TrackSel(it.index.toInt(), com.gflix.app.admin.Langs.norm(it.tags?.optString("language", "und")))
                 },
                 subs = tracks.filter { it.type == "subtitle" }.map {
-                    com.gflix.app.admin.SubSel(it.index.toInt(), it.tags?.optString("language", "und") ?: "und")
+                    com.gflix.app.admin.SubSel(it.index.toInt(), com.gflix.app.admin.Langs.norm(it.tags?.optString("language", "und")))
                 })
             store.updateTask(id) { it.copy(
                 status = TaskStatus.QUEUED, message = "Birleştirme tamamlandı; archive.org yüklemesi başlıyor",
@@ -176,7 +176,9 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             val contents = text(sub, "text")
             if (contents.length > 2_000_000) continue
             val ext = if (contents.trimStart().startsWith("WEBVTT")) "vtt" else "srt"
-            val f = File(folder, "sub-$i.$ext")
+            val lang = com.gflix.app.admin.Langs.guessFromName(
+                runCatching { URI(text(sub, "url")).path.substringAfterLast('/') }.getOrDefault(""))
+            val f = File(folder, "sub-$i.$lang.$ext")
             f.writeText(contents)
             subFiles.add(f)
         }
