@@ -70,6 +70,13 @@ def settings() -> dict:
         # Telefon güncellemesi: bilgisayar yeni APK'yı GitHub Release'inden çeker (sadece okuma yetkili anahtar)
         "gh_token": env.get("GFLIX_GITHUB_TOKEN", "").strip(),
         "gh_repo": env.get("GFLIX_REPO", "").strip(),
+        "archive": {
+            "enabled": env.get("GFLIX_ARCHIVE_ENABLED", "0").strip() == "1"
+                       and env.get("GFLIX_ARCHIVE_RIGHTS_CONFIRMED", "0").strip() == "1",
+            "access": env.get("GFLIX_ARCHIVE_ACCESS_KEY", "").strip(),
+            "secret": env.get("GFLIX_ARCHIVE_SECRET_KEY", "").strip(),
+            "prefix": env.get("GFLIX_ARCHIVE_PREFIX", "").strip(),
+        },
     }
 
 
@@ -162,7 +169,7 @@ def serve(st: dict) -> None:
         sys.exit(1)
     if not st["tmdb"]:
         print("⚠ TMDB_API_KEY yok (~/.config/gflix/yayin.env): reklam/asıl video ayrımı süreye göre yapılamaz, en uzun yayın seçilir.")
-    srv = yayin.Server(st["workdir"], key, st["catalog"], st["tmdb"], st["port"], st["name"], items_dir=st["items"])
+    srv = yayin.Server(st["workdir"], key, st["catalog"], st["tmdb"], st["port"], st["name"], items_dir=st["items"], archive_cfg=st["archive"])
     if not st["catalog"].exists():
         srv.rebuild(wait=True)
     srv.start()
@@ -172,7 +179,7 @@ def serve(st: dict) -> None:
     ts = tailscale_ip()
     if ts:
         print(f"  Tailscale: http://{ts}:{st['port']}")
-    print("  GitHub'a hiçbir şey gönderilmez; video diske yazılmaz.")
+    print("  İstek listesi: archive.org otomatik indirme " + ("AÇIK" if srv.archive.enabled else "KAPALI (yayin.env ayarlarını kontrol et)"))
     stop = {"now": False}
     signal.signal(signal.SIGTERM, lambda *_: stop.update(now=True))
     try:

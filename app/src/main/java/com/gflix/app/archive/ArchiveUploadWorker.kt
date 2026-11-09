@@ -43,6 +43,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.io.IOException
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -65,18 +66,27 @@ class ArchiveUploadWorker(context: Context, params: WorkerParameters) : Coroutin
         val admin = store.current()
         val task = store.task(taskId) ?: return Result.failure()
         if (task.status == TaskStatus.DONE) return Result.success()
+        if (task.tag == PhoneArchiveWorker.TAG) {
+            val first = admin.tasks.filter { it.tag == PhoneArchiveWorker.TAG && it.status != TaskStatus.DONE }
+                .minByOrNull { it.createdAt }
+            if (first?.id != taskId) return Result.retry()
+            if (task.files.isEmpty()) {
+                PhoneArchiveWorker.retry(applicationContext, taskId)
+                return Result.success()
+            }
+        }
         val item = task.archiveItem ?: return fail("archive.org item'ı belirlenmemiş")
         val (access, secret) = admin.archiveKeys() ?: return fail("archive.org anahtarları yok (Stüdyo Ayarları)")
         val client = ArchiveClient(access, secret)
         runCatching { setForeground(foreground(task.display, 0, 0)) }
         return try {
             gate.withPermit {
-                store.updateTask(task.id) { it.copy(status = TaskStatus.UPLOADING, message = null) }
+                store.updateTask(task.id) { it.copy(status = TaskStatus.UPLOADING, message = null, phase = "upload", percent = 0, updatedAt = System.currentTimeMillis()) }
                 upload(task, item, client)
             }
             // Gönderildi; yayına girmeden önce archive.org'un dosyaları işlemesi beklenir (ArchiveVerifyWorker)
             store.updateTask(task.id) {
-                it.copy(status = TaskStatus.PROCESSING, message = "archive.org işliyor…", bytesDone = it.bytesTotal, processingSince = System.currentTimeMillis())
+                it.copy(status = TaskStatus.PROCESSING, phase = "verify", percent = -1, message = "Yükleme tamamlandı · arşivin boyut ve MD5 kontrolü bekleniyor; ilk kontrol 60 sn içinde", bytesDone = it.bytesTotal, processingSince = System.currentTimeMillis(), updatedAt = System.currentTimeMillis(), catalogMd5 = null, catalogSize = 0)
             }
             notifications.notify(NOTIF_ID + task.id.hashCode(),
                 NotificationCompat.Builder(applicationContext, CHANNEL).setSmallIcon(R.drawable.ic_launcher_monochrome)
@@ -100,23 +110,35 @@ class ArchiveUploadWorker(context: Context, params: WorkerParameters) : Coroutin
     }
 
     private suspend fun upload(task: UploadTask, item: String, client: ArchiveClient) {
-        val existing = client.files(item)
+        val existing = client.filesInfo(item)
         val total = task.files.sumOf { it.length }
         val done = AtomicLong(0)
-        var lastUi = 0L
+        var lastUi = System.currentTimeMillis()
+        var lastBytes = 0L
         val report: (Long) -> Unit = { n ->
             val now = done.addAndGet(n)
             val t = System.currentTimeMillis()
             if (t - lastUi > 1500) {
-                lastUi = t
+                val speed = (now - lastBytes).coerceAtLeast(0) * 1000 / (t - lastUi).coerceAtLeast(1)
+                lastUi = t; lastBytes = now
+                kotlinx.coroutines.runBlocking {
+                    store.updateTask(task.id) { it.copy(bytesDone = now.coerceAtLeast(0), bytesTotal = total,
+                        phase = "upload", percent = PhoneProgress.percent(now, total), updatedAt = t,
+                        message = "${now.coerceAtLeast(0) / 1_048_576} / ${total / 1_048_576} MB · ${speed / 1024} KB/sn") }
+                }
                 notifications.notify(NOTIF_ID + task.id.hashCode(), buildNotification(task.display, now, total))
                 setProgressAsync(workDataOf("task" to task.id, "done" to now, "total" to total))
             }
         }
         for (f in task.files) {
             // Daha önce gönderilmiş (md5'i kayıtlı) ya da archive.org'da aynı boyutla duran dosya tekrar gitmez
-            val sentBefore = store.task(task.id)?.files?.firstOrNull { it.assetName == f.assetName }?.md5 != null
-            if (sentBefore || existing[f.assetName] == f.length) { report(f.length); continue }
+            val previousMd5 = store.task(task.id)?.files?.firstOrNull { it.assetName == f.assetName }?.md5
+            val remote = existing[f.assetName]
+            // A matching size is not proof; only a matching remote checksum allows a safe skip.
+            if (previousMd5 != null && remote?.first == f.length &&
+                remote.second != null && remote.second.equals(previousMd5, ignoreCase = true)) {
+                report(f.length); continue
+            }
             var attempt = 0
             var busyWaits = 0
             while (true) {
@@ -355,6 +377,8 @@ class ArchiveVerifyWorker(context: Context, params: WorkerParameters) : Coroutin
         val task = store.task(id) ?: return Result.success()
         if (task.status != TaskStatus.PROCESSING) return Result.success()
         val item = task.archiveItem ?: return Result.success()
+        if (task.files.isEmpty()) return Result.success() // remux is PROCESSING too; never verify it as an upload.
+        return try {
         val (access, secret) = store.current().archiveKeys() ?: return Result.retry()
         val client = ArchiveClient(access, secret)
         val since = task.processingSince.takeIf { it > 0 } ?: System.currentTimeMillis()
@@ -362,23 +386,62 @@ class ArchiveVerifyWorker(context: Context, params: WorkerParameters) : Coroutin
         val remote = client.filesInfo(item)
         val ready = task.files.count { f ->
             val r = remote[f.assetName] ?: return@count false
-            r.first == f.length && (f.md5 == null || r.second == null || r.second.equals(f.md5, ignoreCase = true))
+            r.first == f.length && (if (task.tag == PhoneArchiveWorker.TAG)
+                PhoneProgress.verified(f.length, f.md5, r)
+                else f.md5 == null || r.second == null || r.second.equals(f.md5, ignoreCase = true))
         }
         // aynı boyutta ama farklı içerik: archive.org'daki dosya bozuk ya da eski sürüm
         val mismatch = task.files.firstOrNull { f -> remote[f.assetName]?.let { r -> r.first == f.length && f.md5 != null && r.second != null && !r.second.equals(f.md5, true) } == true }
         val videoOk = ready == task.files.size && downloadable(ArchiveSource.fileUrl(item, task.files.first().assetName))
         if (videoOk) {
             return try {
-                store.updateTask(id) { it.copy(message = "Kataloğa ekleniyor…") }
-                ArchiveUploadWorker.addToCatalog(applicationContext, task, item)
-                ArchivePublishWorker.enqueue(applicationContext)
-                store.updateTask(id) { it.copy(status = TaskStatus.DONE, message = null) }
+                if (task.tag == PhoneArchiveWorker.TAG) {
+                    if (task.catalogMd5 == null) {
+                        store.updateTask(id) { it.copy(phase = "catalog", percent = -1,
+                            message = "Video boyutu ve MD5 eşleşti · katalog arşive yazılıyor", updatedAt = System.currentTimeMillis()) }
+                        ArchiveUploadWorker.addToCatalog(applicationContext, task, item)
+                        val receipt = ArchiveCatalog(applicationContext).publishVerifiedSnapshot(client)
+                        store.updateTask(id) { it.copy(catalogMd5 = receipt.second, catalogSize = receipt.first,
+                            phase = "catalog", percent = -1, message = "Katalog gönderildi · arşivde MD5 eşleşmesi bekleniyor; tekrar kontrol 60 sn içinde",
+                            updatedAt = System.currentTimeMillis()) }
+                        enqueue(applicationContext, id, 60)
+                        return Result.success()
+                    }
+                    val remoteCatalog = client.filesInfo(ArchiveSource.catalogItem())["catalog.json"]
+                    if (!PhoneProgress.verified(task.catalogSize, task.catalogMd5, remoteCatalog)) {
+                        if (minutes >= 24 * 60) {
+                            store.updateTask(id) { it.copy(status = TaskStatus.FAILED,
+                                message = "Katalog 24 saatte doğrulanamadı; dosyalar telefonda korundu. Tekrar dene ile kontrolü sürdür.",
+                                updatedAt = System.currentTimeMillis()) }
+                            return Result.success()
+                        }
+                        store.updateTask(id) { it.copy(phase = "catalog", percent = -1,
+                            message = "Video doğrulandı · katalog MD5 kontrolü bekleniyor · ${minutes} dk; tekrar kontrol 60 sn içinde",
+                            updatedAt = System.currentTimeMillis()) }
+                        enqueue(applicationContext, id, 60)
+                        return Result.success()
+                    }
+                    store.updateTask(id) { it.copy(phase = "cleanup", percent = -1,
+                        message = "Video ve katalog doğrulandı · geçici dosyalar siliniyor", updatedAt = System.currentTimeMillis()) }
+                    val staging = File(applicationContext.filesDir, "phone-archive/$id")
+                    if (staging.exists() && !staging.deleteRecursively())
+                        throw IOException("Arşiv doğrulandı fakat geçici dosyalar temizlenemedi")
+                } else {
+                    store.updateTask(id) { it.copy(message = "Kataloğa ekleniyor…") }
+                    ArchiveUploadWorker.addToCatalog(applicationContext, task, item)
+                    ArchivePublishWorker.enqueue(applicationContext)
+                }
+                store.updateTask(id) { it.copy(status = TaskStatus.DONE, phase = "done", percent = 100,
+                    message = "Arşiv doğrulandı · geçici dosyalar temizlendi", updatedAt = System.currentTimeMillis()) }
+                if (task.tag == PhoneArchiveWorker.TAG) PhoneArchiveWorker.startNext(applicationContext)
                 applicationContext.getSystemService(android.app.NotificationManager::class.java).notify(7300 + id.hashCode(),
                     NotificationCompat.Builder(applicationContext, "uploads").setSmallIcon(R.drawable.ic_launcher_monochrome)
                         .setContentTitle(task.display).setContentText("archive.org işledi, yayında.").setAutoCancel(true).build())
                 Result.success()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                store.updateTask(id) { it.copy(message = "Kataloğa eklenemedi, tekrar denenecek: ${e.message}") }
+                store.updateTask(id) { it.copy(message = "Katalog/temizlik tamamlanamadı; dosyalar korunuyor: ${e.message}", updatedAt = System.currentTimeMillis()) }
                 ArchiveVerifyWorker.enqueue(applicationContext, id, delaySec = 120)
                 Result.success()
             }
@@ -394,15 +457,31 @@ class ArchiveVerifyWorker(context: Context, params: WorkerParameters) : Coroutin
             store.updateTask(id) { it.copy(status = TaskStatus.FAILED, message = "archive.org 24 saattir işlemedi. \"Tekrar dene\" ile kontrol sürer, eksik dosya yeniden gönderilir.") }
             return Result.success()
         }
-        store.updateTask(id) { it.copy(message = "archive.org işliyor… $ready/${task.files.size} dosya hazır · ${minutes} dk") }
+        store.updateTask(id) { it.copy(phase = "verify", percent = -1, updatedAt = System.currentTimeMillis(),
+            message = "Arşiv kontrolü: $ready/${task.files.size} dosyanın boyutu ve MD5'i eşleşti · ${minutes} dk · sonraki kontrol ${if (minutes < 15) 60 else 180} sn içinde") }
         enqueue(applicationContext, id, delaySec = if (minutes < 15) 60 else 180)
-        return Result.success()
+        Result.success()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            store.updateTask(id) { it.copy(message = "Arşiv kontrolüne ulaşılamadı; dosyalar korunuyor. 60 sn sonra tekrar: ${e.message}", updatedAt = System.currentTimeMillis()) }
+            Result.retry()
+        }
     }
 
     /** Video indirme adresi gerçekten açılıyor mu (ilk baytlar gelir mi) */
     private fun downloadable(url: String): Boolean = runCatching {
         com.gflix.app.player.ArchiveStreamCache.http.newCall(okhttp3.Request.Builder().url(url).header("Range", "bytes=0-1023").build()).execute().use { r ->
-            r.code == 206 || r.code == 200
+            (r.code == 206 || r.code == 200) && r.body?.byteStream()?.use { input ->
+                val bytes = ByteArray(1024)
+                var count = 0
+                while (count < bytes.size) {
+                    val n = input.read(bytes, count, bytes.size - count)
+                    if (n <= 0) break
+                    count += n
+                }
+                count == bytes.size
+            } == true
         }
     }.getOrDefault(false)
 

@@ -85,6 +85,17 @@ class ArchiveCatalog(private val context: Context) {
         )
     }
 
+    /** Upload exactly these bytes and keep a receipt so cleanup waits for remote processing. */
+    suspend fun publishVerifiedSnapshot(client: ArchiveClient): Pair<Long, String> = lock.withLock {
+        val bytes = withContext(Dispatchers.IO) { file.readBytes() }
+        val md5 = java.security.MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02x".format(it) }
+        client.put(ArchiveSource.catalogItem(), "catalog.json", bytes.toRequestBody("application/json".toMediaType()),
+            meta = listOf("mediatype" to "data", "collection" to "opensource",
+                "title" to "G-Flix katalog (${ArchiveSource.prefix})", "subject" to "gflix"),
+            replace = true, interactive = true)
+        bytes.size.toLong() to md5
+    }
+
     // ------------------------------------------------------------ değişiklikler
 
     fun Catalog.upsert(id: String, create: () -> Title, change: (Title) -> Title): Catalog {

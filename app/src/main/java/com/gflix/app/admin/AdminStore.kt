@@ -77,6 +77,12 @@ data class UploadTask(
     val archiveItem: String? = null,
     /** archive.org'un işlemesi beklenmeye başlandığı an (ms); işlenince kataloğa eklenir */
     val processingSince: Long = 0,
+    /** Durable phone pipeline progress; -1 means the server has no measurable total. */
+    val phase: String = "",
+    val percent: Int = -1,
+    val updatedAt: Long = 0,
+    val catalogMd5: String? = null,
+    val catalogSize: Long = 0,
 ) {
     val display: String
         get() = when (kind) {
@@ -121,6 +127,8 @@ data class AdminState(
     val iaAccess: String? = null,
     val iaSecret: String? = null,
     val iaPrefix: String? = null,
+    /** Explicit permission to publish these non-DRM files publicly on Internet Archive. */
+    val archiveRightsConfirmed: Boolean = false,
     /** Kataloğun archive.org'a son yazılışı ("✓ 12:03" ya da hata) */
     val iaCatalogNote: String? = null,
 ) {

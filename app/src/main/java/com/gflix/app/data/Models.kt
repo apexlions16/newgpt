@@ -296,6 +296,7 @@ data class UserState(
     val activeProfileId: String? = null,
     val data: Map<String, ProfileData> = emptyMap(),
     val token: String? = null,
+    val setupSkipped: Boolean = false,
 ) {
     val activeProfile: Profile? get() = profiles.firstOrNull { it.id == activeProfileId }
     val activeData: ProfileData get() = dataFor(activeProfileId)

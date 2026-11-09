@@ -153,7 +153,12 @@ object WishList {
         lockRun = prefs.getBoolean("lockRun", true)
         showWindow = prefs.getBoolean("showWindow", false)
         bgRun = prefs.getBoolean("bgRun", true)
-        pcShare = prefs.getBoolean("pcShare", false)
+        pcShare = prefs.getBoolean("pcShare", true)
+        // One-time upgrade to phone-only operation; keep every credential, site and queue entry.
+        if (!prefs.getBoolean("phonePipelineV2", false))
+            prefs.edit().putBoolean("phoneArchive", true).putBoolean("phonePipelineV2", true)
+                .putInt("titleGapMin", 0).putLong("restUntil", 0).apply()
+        phoneArchive = prefs.getBoolean("phoneArchive", true)
         night = prefs.getBoolean("night", false)
         gapSec = prefs.getInt("gapSec", 20)
         cats = prefs.getString("cats", "").orEmpty().split("\n").filter { it.startsWith("http") }
@@ -166,8 +171,8 @@ object WishList {
             val i = l.indexOf('\t'); if (i > 0) l.substring(i + 1).toLongOrNull()?.let { catReadAt[l.substring(0, i)] = it }
         }
         runCatching { AppJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Suggest.serializer()), prefs.getString("sugs", "[]") ?: "[]") }
-            .getOrNull()?.let { if (prefs.getBoolean("worker", isTv(app))) sugs.addAll(it) }
-        worker = prefs.getBoolean("worker", isTv(app))
+            .getOrNull()?.let { if (prefs.getBoolean("worker", isTv(app) || !PcServer.configured)) sugs.addAll(it) }
+        worker = if (phoneArchive) true else prefs.getBoolean("worker", isTv(app) || !PcServer.configured)
         prefs.getString("events", "").orEmpty().lines().forEach { l ->
             val i = l.indexOf('\t'); if (i > 0) l.substring(0, i).toLongOrNull()?.let { events.addLast(it to l.substring(i + 1)) }
         }
@@ -208,6 +213,15 @@ object WishList {
     /** Bu cihaz işi yapar mı (TV kutusu). Kapalıysa (telefon) sadece panel: durum bilgisayardan okunur, komutlar oraya gider. */
     var worker by mutableStateOf(false)
         private set
+
+    /** Phone captures, downloads, verifies archive.org and clears space before the next title. */
+    var phoneArchive by mutableStateOf(true)
+        private set
+    fun changePhoneArchive(on: Boolean) {
+        phoneArchive = on
+        if (::prefs.isInitialized) prefs.edit().putBoolean("phoneArchive", on).apply()
+        if (on && !worker && ::app.isInitialized) changeWorker(true)
+    }
     var remoteDevice by mutableStateOf("")
         private set
     /** Yakalama cihazından son haber kaç sn önce (null: hiç yok) */
@@ -418,7 +432,7 @@ object WishList {
     /** Panelde kategori okut: cihaz okur, sonuç durumla gelir */
     fun askCategory(url: String) { remoteCat = null; cmd("readCat") { put("url", url) } }
 
-    fun chipWanted(): Boolean = ::app.isInitialized && PcServer.configured && (started || hasOpen())
+    fun chipWanted(): Boolean = ::app.isInitialized && (PcServer.configured || phoneArchive) && (started || hasOpen())
 
     fun hasOpen(): Boolean = items.any { it.state != "done" }
 
@@ -751,7 +765,7 @@ object WishList {
     fun changeNight(on: Boolean) { night = on; if (::prefs.isInitialized) prefs.edit().putBoolean("night", on).apply() }
 
     // ---- 🖥️ bilgisayar da yakalasın (işler bölüşülür)
-    var pcShare by mutableStateOf(false)
+    var pcShare by mutableStateOf(true)
         private set
     fun changePcShare(on: Boolean) { pcShare = on; if (::prefs.isInitialized) prefs.edit().putBoolean("pcShare", on).apply() }
     var pcNow by mutableStateOf("")
@@ -811,7 +825,9 @@ object WishList {
         while (true) {
             delay(15_000)
             if (!::app.isInitialized || !worker) continue        // panel (telefon): iş yapılmaz, sadece izlenir
-            if (PcServer.configured) {
+            if (phoneArchive) runCatching { com.gflix.app.archive.PhoneArchiveWorker.recover(app) }
+                .onFailure { now = "Telefon işi yeniden başlatılamadı: ${it.message}" }
+            if (PcServer.configured && !phoneArchive) {
                 runCatching { syncRefresh() }
                 runCatching { syncNewEps() }.onFailure { now = "⚠ Yeni bölümler: ${it.message}" }
                 runCatching { syncPlan() }
@@ -826,7 +842,7 @@ object WishList {
                 holdWake(false)
                 // liste boş: sırası gelen kategori okunur (başlatılmışsa)
                 val due = sugDueCat(System.currentTimeMillis())
-                if (started && due != null && PcServer.configured && CaptureEngine.canWish()) runCatching { sugStep(due) }
+                if (started && due != null && (phoneArchive || PcServer.configured) && CaptureEngine.canWish()) runCatching { sugStep(due) }
                 continue
             }
             // "işlemde" kalıp sahipsiz kalan (takılan) iş sıraya döner
@@ -838,16 +854,20 @@ object WishList {
                 }
                 if (fixed) save()
             }
-            if (PcServer.configured) {
-                // bilgisayardaki işin sonucu duraklatılmışken de alınır; yeni iş ancak başlatılmışsa verilir
+            if (phoneArchive) {
+                val waiting = runCatching { phoneStep(System.currentTimeMillis()) }
+                    .getOrElse { now = "📱 Arşiv işleri kontrol edilemedi: ${it.message}"; true }
+                save()
+                if (waiting) continue  // One item in the entire pipeline; never start the next.
+            } else if (PcServer.configured) {
                 runCatching { pcStep(System.currentTimeMillis()) }.onFailure { pcNow = "🖥️ ⚠ ${it.message}" }
                 save()
             }
             holdWake(started && bgRun && hasOpen())
             if (!started) { now = "⏸ Duraklatıldı: sırayı ayarla, ▶ Başlat'a bas"; continue }
-            if (!PcServer.configured || !CaptureEngine.canWish()) {
+            if ((!phoneArchive && !PcServer.configured) || !CaptureEngine.canWish()) {
                 now = when {
-                    !PcServer.configured -> "⏸ bilgisayar bağlı değil"
+                    !phoneArchive && !PcServer.configured -> "⏸ bilgisayar bağlı değil"
                     !CaptureEngine.hasSite() -> "⏸ önce Sayfadan Yakala'da siteyi bir kez aç"
                     CaptureEngine.running -> ""
                     !CaptureEngine.appVisible -> "⏸ ekran kapalı/uygulama arkada: video ancak ekran açıkken başlar. Şarja tak, 🌙 Gece modu'nu aç, uygulamayı açık bırak."
@@ -917,8 +937,64 @@ object WishList {
             ?.let { w -> busy { scan(w) }; delay(gapSec * 1000L); return }
         // 3) sıradaki parça: listedeki SIRAYA göre (kullanıcı ↑↓ ile ayarlar)
         val (w, e) = nextUnit(items, t) ?: return
+        if (pcShare && !phoneArchive) {
+            now = if (PcServer.configured) "🖥️ Bilgisayarda indirme ve archive.org doğrulaması bekleniyor"
+                  else "🖥️ İndirmek için bilgisayarı Profil → Bilgisayar bağlantısı bölümünden bağla"
+            return
+        }
         if (e == null) busy { captureMovie(w) } else busy { captureEp(w, e) }
         delay(gapSec * 1000L)
+    }
+
+    // ---------------------------------------------------------------- 📱 cihazda indirme, doğrulama ve temizleme
+    private suspend fun phoneStep(t: Long): Boolean {
+        val tracked = items.flatMap { w ->
+            listOf(Triple(w, null as WishEp?, w.pcJid)) +
+                w.eps.map { e -> Triple(w, e as WishEp?, e.pcJid) }
+        }.filter { it.third.startsWith("phone:") }
+        for ((w, e, jid) in tracked) {
+            val taskId = jid.removePrefix("phone:")
+            val task = AdminStore(app).task(taskId)
+            val target = e ?: w
+            if (task == null) {
+                if (e == null) { w.pcJid = ""; w.state = "retry"; w.nextAt = t + backoff(w.tries) }
+                else { e.pcJid = ""; e.state = "retry"; e.nextAt = t + backoff(e.tries); refreshState(w) }
+                continue
+            }
+            val name = label(w, e)
+            when (task.status) {
+                TaskStatus.DONE -> {
+                    if (e == null) { w.state = "done"; w.pcJid = ""; w.note = "☁️ archive.org doğrulandı, geçici dosyalar silindi" }
+                    else { e.state = "done"; e.pcJid = ""; e.note = "☁️ archive.org doğrulandı, geçici dosyalar silindi"; refreshState(w) }
+                    noteDone()
+                    if (w.state == "done") { titleFinished(); milestone("✅ $name arşivlendi") }
+                    now = "✅ $name: arşivlendi ve telefon alanı temizlendi"
+                }
+                TaskStatus.FAILED, TaskStatus.SERVER_FAILED -> {
+                    val next = if (e == null) w.nextAt else e.nextAt
+                    if (next == 0L) {
+                        if (e == null) w.nextAt = t + backoff(w.tries) else e.nextAt = t + backoff(e.tries)
+                    } else if (next <= t) {
+                        AdminRepo(app).retry(task)
+                        if (e == null) w.nextAt = t + backoff(w.tries) else e.nextAt = t + backoff(e.tries)
+                    }
+                    now = "⚠ $name: ${task.message.orEmpty()} · aynı dosyalar korunuyor, yeniden denenecek"
+                }
+                else -> {
+                    val label = when (task.status) {
+                        TaskStatus.UPLOADING -> "archive.org'a yükleniyor"
+                        TaskStatus.PROCESSING -> com.gflix.app.archive.PhoneProgress.label(task.phase)
+                        else -> "indiriliyor / hazırlanıyor"
+                    }
+                    now = "📱 $name: $label · ${task.message.orEmpty()}"
+                }
+            }
+        }
+        save()
+        // Includes tasks created just before the capture-to-wishlist handoff was interrupted.
+        return AdminStore(app).current().tasks.any {
+            it.tag == com.gflix.app.archive.PhoneArchiveWorker.TAG && it.status != TaskStatus.DONE
+        }
     }
 
     // ---------------------------------------------------------------- 🖥️ bilgisayara verilen işler
@@ -935,22 +1011,27 @@ object WishList {
                 val (state, note) = st[jid] ?: ("lost" to "")
                 val lbl = label(w, e)
                 when (state) {
-                    "ok" -> { if (e != null) { e.state = "done"; e.pcJid = ""; e.note = "🖥️ bilgisayarda alındı ${hhmm(t)}" } else { w.state = "done"; w.pcJid = ""; w.note = "🖥️ bilgisayarda alındı ${hhmm(t)} · Stüdyo → Onay bekleyenler" }
-                        pcNow = "🖥️ $lbl alındı" }
+                    "ok" -> { if (e != null) { e.state = "done"; e.pcJid = ""; e.note = "☁️ archive.org'a yüklendi ${hhmm(t)}" } else { w.state = "done"; w.pcJid = ""; w.note = "☁️ archive.org'a yüklendi ${hhmm(t)}" }
+                        pcNow = "☁️ $lbl archive.org'a yüklendi" }
                     "black" -> {
                         val next = t + backoff(0)
                         if (e != null) { e.state = "retry"; e.pcJid = ""; e.nextAt = next; e.note = "🖥️ $note; ${hhmm(next)}'de tekrar · ${e.tries}. deneme" }
                         else { w.state = "retry"; w.pcJid = ""; w.nextAt = next; w.note = "🖥️ $note; ${hhmm(next)}'de tekrar · ${w.tries}. deneme" }
-                        warnBlack("🖥️ $lbl")
+                        black = "⚠️ $lbl: bilgisayarda indirme veya archive.org yüklemesi başarısız. $note · ${hhmm(next)}'de yeniden denenecek."
                     }
                     "lost" -> { if (e != null) { e.state = "wait"; e.pcJid = "" } else { w.state = "wait"; w.pcJid = "" } }   // bilgisayar yeniden başladı
-                    else -> pcNow = "🖥️ $lbl: bilgisayarda " + if (state == "work") "yakalanıyor" else "sırada"
+                    else -> pcNow = "☁️ $lbl: " + note.ifBlank { if (state == "work") "indiriliyor / yükleniyor" else "sırada" }
                 }
                 if (e != null) refreshState(w)
             }
             if (pcUnits().isNotEmpty()) return          // bilgisayar meşgul: aynı anda tek iş
         }
         if (!pcShare || !started) { pcNow = ""; return }
+        val archiving = runCatching { PcServer.archiveJobs() }.getOrNull()
+        if ((archiving?.get("enabled") as? JsonPrimitive)?.content != "true") {
+            pcNow = "⚠ Bilgisayarda archive.org indirme ayarı kapalı veya sunucu güncel değil"
+            return
+        }
         if (oneByOne && restUntil > t) { pcNow = ""; return }
         val next = nextUnit(pool(), t)
         val movie = next?.takeIf { it.second == null }?.first
@@ -958,12 +1039,12 @@ object WishList {
         when {
             movie != null -> {
                 movie.pcJid = PcServer.pccapAdd(movie.pageUrl, hint(movie, null)); movie.state = "work"; movie.tries++
-                movie.note = "🖥️ bilgisayarda yakalanıyor"; pcNow = "🖥️ ${movie.title}: bilgisayara verildi"
+                movie.note = "🖥️ bilgisayarda indirilecek"; pcNow = "🖥️ ${movie.title}: bilgisayara verildi"
             }
             ep != null -> {
                 val (w, e) = ep
                 e.pcJid = PcServer.pccapAdd(e.url, hint(w, e)); e.state = "work"; e.tries++
-                e.note = "🖥️ bilgisayarda yakalanıyor"; pcNow = "🖥️ ${label(w, e)}: bilgisayara verildi"
+                e.note = "🖥️ bilgisayarda indirilecek"; pcNow = "🖥️ ${label(w, e)}: bilgisayara verildi"
             }
             else -> pcNow = ""
         }
@@ -1089,9 +1170,20 @@ object WishList {
         val r = CaptureEngine.captureAt(w.pageUrl, hint(w, null), w.closeQ, listStay) { live("▶ ${w.title}: $it") }
         if (r == "preempted") { w.state = "wait"; w.tries--; w.note = "Tazeleme için ara verildi; sırada"; return }
         if (r == "ok") {
-            noteDone(); w.state = "done"; w.note = "Alındı ${hhmm(System.currentTimeMillis())} · ${got()} · Stüdyo → Onay bekleyenler"
-            milestone("🎬 ${w.title} alındı · onay bekliyor")
-            titleFinished()
+            if (phoneArchive) {
+                val id = CaptureEngine.lastPhoneJobId
+                if (id == null) {
+                    w.state = "retry"; w.nextAt = System.currentTimeMillis() + backoff(w.tries)
+                    w.note = "Telefon indirme işi oluşturulamadı; yeniden denenecek"
+                } else {
+                    w.pcJid = "phone:$id"; w.state = "work"
+                    w.note = "📱 İndirme → MKV → archive.org → doğrulama → temizleme"
+                }
+            } else {
+                noteDone(); w.state = "done"; w.note = "Alındı ${hhmm(System.currentTimeMillis())} · ${got()} · Stüdyo → Onay bekleyenler"
+                milestone("🎬 ${w.title} alındı · onay bekliyor")
+                titleFinished()
+            }
         }
         else { w.state = "retry"; w.nextAt = System.currentTimeMillis() + backoff(w.tries); w.note = "Video gelmedi (siyah ekran${why()}); ${hhmm(w.nextAt)}'de tekrar · ${w.tries}. deneme"; warnBlack(w.title) }
     }
@@ -1112,6 +1204,18 @@ object WishList {
         val r = CaptureEngine.captureAt(e.url, hint(w, e), w.closeQ, listStay) { live("▶ ${label(w, e)}: $it") }
         if (r == "preempted") { e.state = "wait"; e.tries--; e.note = "Tazeleme için ara verildi; sırada"; refreshState(w); return }
         if (r == "ok") {
+            if (phoneArchive) {
+                val id = CaptureEngine.lastPhoneJobId
+                if (id != null) {
+                    e.pcJid = "phone:$id"; e.state = "work"
+                    e.note = "📱 İndirme → MKV → archive.org → doğrulama → temizleme"
+                } else {
+                    e.state = "retry"; e.nextAt = System.currentTimeMillis() + backoff(e.tries)
+                    e.note = "İndirme kuyruğu oluşturulamadı"
+                }
+                refreshState(w)
+                return
+            }
             noteDone()
             if (CaptureEngine.lastPlayer == "Close" && CaptureEngine.lastHeight > w.closeQ) w.closeQ = CaptureEngine.lastHeight
             e.state = "done"; e.note = "Alındı ${hhmm(System.currentTimeMillis())} · ${got()}"
@@ -1196,18 +1300,36 @@ fun WishListDialog(onDismiss: () -> Unit) {
     var siteMsg by remember { mutableStateOf<String?>(null) }
     @Suppress("UNUSED_VARIABLE") val rev = WishList.rev
 
+    val context = androidx.compose.ui.platform.LocalContext.current
     fun search() {
         if (q.trim().length < 2) return
         err = null; pick = null
         scope.launch {
-            runCatching { PcServer.tmdbSearch(q.trim()) }.onSuccess { o ->
-                hits = (o["results"] as? JsonArray).orEmpty().mapNotNull { e ->
-                    val x = e as? JsonObject ?: return@mapNotNull null
-                    fun s(k: String) = (x[k] as? JsonPrimitive)?.content?.takeIf { it != "null" }.orEmpty()
-                    TmdbHit(s("tmdb"), s("kind"), s("title"), s("original"), s("year").toIntOrNull())
+            runCatching {
+                val result = if (PcServer.configured) runCatching { PcServer.tmdbSearch(q.trim()) }.getOrNull() else null
+                if (result != null) {
+                    (result["results"] as? JsonArray).orEmpty().mapNotNull { e ->
+                        val x = e as? JsonObject ?: return@mapNotNull null
+                        fun s(k: String) = (x[k] as? JsonPrimitive)?.content?.takeIf { it != "null" }.orEmpty()
+                        TmdbHit(s("tmdb"), s("kind"), s("title"), s("original"), s("year").toIntOrNull())
+                    }
+                } else {
+                    // Telefon bilgisayardan bağımsız arayabilsin; anahtar bir kez Stüdyo Ayarları'nda saklanır.
+                    val tmdbKey = AdminStore(context).current().tmdbKey.orEmpty()
+                    require(tmdbKey.isNotBlank()) {
+                        "TMDB için Stüdyo Ayarları'na bir kez TMDB API anahtarı kaydet veya bilgisayara bağlan."
+                    }
+                    val client = Tmdb(tmdbKey, okhttp3.OkHttpClient())
+                    listOf("movie", "tv").flatMap { kind ->
+                        client.search(kind, q.trim(), null).take(8).map {
+                            TmdbHit("$kind/${it.id}", kind, it.title, it.originalTitle, it.year)
+                        }
+                    }
                 }
+            }.onSuccess { found ->
+                hits = found
                 if (hits.isEmpty()) err = "TMDB'de sonuç yok"
-            }.onFailure { err = "Bilgisayara ulaşılamadı: ${it.message}" }
+            }.onFailure { err = it.message ?: "TMDB araması başarısız" }
         }
     }
 
@@ -1219,7 +1341,7 @@ fun WishListDialog(onDismiss: () -> Unit) {
                     if (!WishList.worker) {
                         val age = WishList.remoteAge
                         Text(when {
-                            age == null -> "📺 Yakalama cihazı yok (TV kutusunda G-Flix açık ve bilgisayara bağlı olmalı)"
+                            age == null -> if (WishList.phoneArchive) "📱 İş bu telefonda · bilgisayar gerekmiyor" else "📺 Yakalama cihazı yok (TV kutusunda G-Flix açık ve bilgisayara bağlı olmalı)"
                             age < 30 -> "📺 İş ${WishList.remoteDevice.ifBlank { "TV kutusunda" }} · canlı"
                             else -> "⚠ ${WishList.remoteDevice.ifBlank { "TV kutusu" }}ndan ${age / 60} dk'dır haber yok"
                         }, color = if (age != null && age < 30) GColors.Match else GColors.TextSecondary, fontSize = 11.sp)
@@ -1231,7 +1353,11 @@ fun WishListDialog(onDismiss: () -> Unit) {
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 item(key = "intro") {
                     Column {
-                        Text("TMDB'den seç; sayfayı sitede kendisi bulur, arkada yakalar. Siyah ekranda ayarlı aralıkla alana kadar tekrar dener.",
+                        Text(if (WishList.phoneArchive)
+                            "Bu telefon sırayla indirir, ses ve altyazıları tek MKV'de toplar; arşiv doğrulamasından sonra dosyaları silip sıradakine geçer."
+                            else if (WishList.pcShare)
+                            "TMDB'den film veya dizi seç; sayfasını bulur. Bilgisayar izinli videoyu indirir, archive.org'a yükler, doğrular ve kataloğa ekler. Başarısız olursa sıraya alıp tekrar dener."
+                            else "TMDB'den seç; sayfayı sitede kendisi bulur. Arka planda bağlantıyı yakalar; gerektiğinde tekrar dener.",
                             color = GColors.TextSecondary, fontSize = 12.sp, lineHeight = 16.sp)
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
                             OutlinedTextField(q, { q = it }, singleLine = true, colors = gTextFieldColors(), placeholder = { Text("Film ya da dizi adı (TMDB)") },
@@ -1323,9 +1449,11 @@ fun WishListDialog(onDismiss: () -> Unit) {
                         }
                         if (!WishList.started) Text("Sırayı ↑ ↓ ile ayarla, sonra ▶ Başlat. Liste yukarıdan aşağı işler.", color = GColors.TextSecondary, fontSize = 11.sp)
                         if (WishList.now.isNotBlank()) Text(WishList.now, color = GColors.Match, fontSize = 12.sp)
-                        if (WishList.pcNow.isNotBlank()) Text(WishList.pcNow, color = GColors.Match, fontSize = 12.sp)
-                        if (!PcServer.configured) Text("⚠ Bilgisayar bağlı değil; liste bilgisayar bağlanınca çalışır.", color = GColors.TextSecondary, fontSize = 12.sp)
-                        else if (!CaptureEngine.hasSite()) Text("⚠ Önce Sayfadan Yakala'da siteyi bir kez aç; liste o siteyi kullanır.", color = GColors.TextSecondary, fontSize = 12.sp)
+                        if (!WishList.phoneArchive && WishList.pcNow.isNotBlank()) Text(WishList.pcNow, color = GColors.Match, fontSize = 12.sp)
+                        if (WishList.phoneArchive) PhoneQueueProgress()
+                        if (WishList.phoneArchive) Text("📱 Bu telefon sırayla indirir ve arşivler. Stüdyo Ayarları'nda arşiv anahtarları ve hak onayı gerekli.", color = GColors.TextSecondary, fontSize = 12.sp)
+                        else if (!PcServer.configured) Text("⚠ Bilgisayar bağlı değil; liste bilgisayar bağlanınca çalışır.", color = GColors.TextSecondary, fontSize = 12.sp)
+                        else if (!CaptureEngine.hasSite()) Text("⚠ Önce Sayfadan Yakala'da kaynak siteyi aç; liste o siteyi kullanır. archive.org için ayrıca bilgisayarda arşivleme etkin olmalı.", color = GColors.TextSecondary, fontSize = 12.sp)
                     }
                 }
                 // 👁 Arka plandaki tarayıcı: liste çalışırken görünür; oynatıcıya kendin de dokunabilirsin (gizlenebilir)
@@ -1457,9 +1585,10 @@ fun WishListDialog(onDismiss: () -> Unit) {
 fun BlackBanner() {
     var msg by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF3A1F1F)).padding(8.dp)) {
+        val transferError = WishList.black.startsWith("⚠️")
         Text(WishList.black, color = Color.White, fontSize = 12.sp)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = {
+            if (!transferError) TextButton(onClick = {
                 CaptureEngine.clearBrowserData { msg = it; WishList.cleared() }
             }) { Text("🧹 Temizle", color = Color.White, fontWeight = FontWeight.Bold) }
             TextButton(onClick = { WishList.cleared() }) { Text("Kapat", color = GColors.TextSecondary) }
@@ -1477,7 +1606,8 @@ private fun WishSettings() {
         SettingSwitch("📺 İşi bu cihaz yapsın (yakalama cihazı)",
             "Açık: sayfaları bu cihaz açar, linkleri bu cihaz yeniler (TV kutusu). Kapalı: bu cihaz sadece izler ve yönetir; iş yakalama cihazında.",
             WishList.worker) { WishList.changeWorker(it) }
-        SettingSwitch("🖥️ Bilgisayar da yakalasın", "İşler bölüşülür; bilgisayarda masaüstü açık olmalı", WishList.pcShare) { WishList.changePcShare(it) }
+        SettingSwitch("📱 Telefon indir + archive.org'a yükle", "Tek tek indirir; bütün ses ve altyazıları MKV'ye birleştirir. Arşiv ve katalog doğrulanınca dosyaları siler.", WishList.phoneArchive) { WishList.changePhoneArchive(it) }
+        if (!WishList.phoneArchive) SettingSwitch("🖥️ Bilgisayarda indir + archive.org'a yükle", "Eski bilgisayar modu", WishList.pcShare) { WishList.changePcShare(it) }
         SettingSwitch("📱 Arka planda da çalışsın", "Uygulama arkadayken de dener (pil kısıtlamasını kapat ki Android durdurmasın)", WishList.bgRun) { WishList.changeBgRun(it) }
         val ctx = androidx.compose.ui.platform.LocalContext.current
         TextButton(onClick = {

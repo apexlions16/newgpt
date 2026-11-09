@@ -545,6 +545,15 @@ object CaptureEngine {
             put("subs", buildJsonArray { s.subs.forEach { (u, t) -> add(buildJsonObject { put("url", u); put("text", t) }) } })
             put("playlists", buildJsonArray { s.playlists.forEach { (u, t) -> add(buildJsonObject { put("url", u); put("text", t) }) } })
         }
+        if (WishList.phoneArchive) {
+            // The phone, not a PC or GitHub, downloads and archives authorized captured streams.
+            val jobId = com.gflix.app.archive.PhoneArchiveWorker.enqueue(app, title, capture, hints[s.pageUrl])
+            lastPhoneJobId = jobId
+            val tag = "phone:$jobId"
+            sentTitle = title
+            s.sentTag = tag
+            return LinkJobRef(tag, 0L, title, System.currentTimeMillis())
+        }
         if (com.gflix.app.data.PcServer.configured) {
             // Yeni düzen (linkten anlık yayın): bilgisayar indirmez. Sayfanın adresi "kaynak" olarak, yakalanan yayın
             // (linkler, başlıklar, altyazılar) da bilgisayara gider: site bilgisayarın tarayıcısına yayın vermezse
@@ -610,7 +619,7 @@ object CaptureEngine {
                     val dur = if (text.contains("#EXT-X-STREAM-INF")) {
                         val vt = bestVariant(text, f.url)?.let { v -> fetchList(v)?.also { s.playlists[v] = it } }
                         // Sesler: bilgisayar aynı linkleri isteyince site reddedebilir, metinlerini şimdi al
-                        Regex("#EXT-X-MEDIA:[^\\n]*TYPE=AUDIO[^\\n]*URI=\"([^\"]+)\"").findAll(text).take(6).forEach { m ->
+                        Regex("#EXT-X-MEDIA:[^\\n]*TYPE=AUDIO[^\\n]*URI=\"([^\"]+)\"").findAll(text).forEach { m ->
                             runCatching { java.net.URI(f.url).resolve(m.groupValues[1]).toString() }.getOrNull()?.let { au ->
                                 if (!s.playlists.containsKey(au)) fetchList(au)?.let { s.playlists[au] = it }
                             }
@@ -654,7 +663,14 @@ object CaptureEngine {
                 }
                 s.sent = true
                 runCatching { send(s) }
-                    .onSuccess { prefs.edit().putLong("sent:" + s.pageUrl, System.currentTimeMillis()).apply(); status = if (s.sentTag == PC_SOURCE) "${sentTitle.orEmpty()}\nStüdyo → Onay bekleyenler'den TMDB ile eşleştirip yayına al." else "📤 Bilgisayara gönderildi: ${sentTitle.orEmpty()}\nBilgisayar filmi/bölümü tanıyıp en iyi kalitede indirecek." }
+                    .onSuccess {
+                        prefs.edit().putLong("sent:" + s.pageUrl, System.currentTimeMillis()).apply()
+                        status = when {
+                            s.sentTag?.startsWith("phone:") == true -> "📱 Telefonda indirme başladı: ${sentTitle.orEmpty()} · arşiv doğrulanmadan iş bitmiş sayılmaz."
+                            s.sentTag == PC_SOURCE -> "${sentTitle.orEmpty()}\nStüdyo → Onay bekleyenler'den TMDB ile eşleştirip yayına al."
+                            else -> "📤 Bilgisayara gönderildi: ${sentTitle.orEmpty()}"
+                        }
+                    }
                     .onFailure { s.sent = false; s.longAt = System.currentTimeMillis(); status = "Gönderilemedi, yeniden denenecek: ${it.message}" }
             }
         }
@@ -760,7 +776,8 @@ object CaptureEngine {
     // ---------------------------------------------------------------- İstek listesi için (arka planda)
 
     /** Liste bu an tarayıcıyı kullanabilir mi: elle sıra/arama yok, kullanıcı Sayfadan Yakala'da gezinmiyor (film izlerken de sürer) */
-    internal fun canWish(): Boolean = ::app.isInitialized && queueAt < 0 && !navBusy && (!onScreen || listOpen) && hasSite() && (appVisible || WishList.bgRun || watching)
+    internal fun canWish(): Boolean = ::app.isInitialized && queueAt < 0 && !navBusy && (!onScreen || listOpen) &&
+        (hasSite() || WishList.items.any { it.pageUrl.isNotBlank() }) && (appVisible || WishList.bgRun || watching)
 
     /** Tazeleme (biri izlemek istiyor) için: telefonda film/dizi izlenirken de olur (tarayıcı sessiz ve görünmez) */
     internal fun canRefresh(): Boolean = ::app.isInitialized && queueAt < 0 && !navBusy && (!onScreen || listOpen) && hasSite() &&
@@ -877,7 +894,11 @@ object CaptureEngine {
      * Bir sayfayı aç, yakalanıp bilgisayara gidene kadar bekle. "ok" | "black" (video gelmedi: siyah ekran/kısıtlama).
      * Sadece Close sekmesi denenir (Rapidrame'e geçilmez). Olmazsa sayfa bırakılır; liste sonra dener.
      */
+    @Volatile var lastPhoneJobId: String? = null
+        private set
+
     internal suspend fun captureAt(url: String, hint: JsonObject?, closeHeight: Int, stay: Int = staySec, say: (String) -> Unit): String {
+        lastPhoneJobId = null
         say("sayfa açılıyor")
         hint?.let { hints[url] = it }
         lastBlock = ""
@@ -1234,7 +1255,7 @@ fun CaptureBackgroundHost() {
     val e = CaptureEngine
     val ctx = LocalContext.current
     // İstek listesi uygulama açılınca kendiliğinden çalışsın (Sayfadan Yakala'ya girmeyi beklemesin)
-    LaunchedEffect(Unit) { if (com.gflix.app.data.PcServer.configured) e.init(ctx) }
+    LaunchedEffect(Unit) { e.init(ctx) }
     // Uygulama görünür mü (ekran kapalıyken liste boşuna deneyip hak harcamasın)
     val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(owner) {

@@ -19,9 +19,10 @@ android {
 
     defaultConfig {
         // Ayrı paket: eski G-Flix (com.gflix.app) ile aynı telefonda yan yana kurulur
-        applicationId = "com.gflix.archive"
+        applicationId = "com.gflix.archive.next"
         minSdk = 26
         targetSdk = 35
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = cfg("GFLIX_VERSION_CODE", "1").toInt()
         versionName = cfg("GFLIX_VERSION_NAME", "1.0.0")
 
@@ -37,8 +38,19 @@ android {
     }
 
     // Release keystore is never kept in source control. Provide all GFLIX_KEYSTORE* values in CI.
-    val signingFile = cfg("GFLIX_KEYSTORE").takeIf { it.isNotBlank() }?.let(::file)
+    val signingFile = cfg("GFLIX_KEYSTORE").takeIf { it.isNotBlank() }?.let { file(it) }
     signingConfigs {
+        // CI test builds use a stable, cached keystore; local builds retain Android's default debug key.
+        getByName("debug") {
+            val path = cfg("GFLIX_DEBUG_KEYSTORE")
+            val keyFile = path.takeIf { it.isNotBlank() }?.let { file(it) }
+            if (keyFile?.isFile == true) {
+                storeFile = keyFile
+                storePassword = cfg("GFLIX_DEBUG_KEYSTORE_PASSWORD")
+                keyAlias = cfg("GFLIX_DEBUG_KEY_ALIAS", "gflix-next")
+                keyPassword = cfg("GFLIX_DEBUG_KEY_PASSWORD", cfg("GFLIX_DEBUG_KEYSTORE_PASSWORD"))
+            }
+        }
         create("gflix") {
             signingFile?.let { storeFile = it }
             storePassword = cfg("GFLIX_KEYSTORE_PASSWORD")
@@ -109,6 +121,13 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // On-device HLS fetch and lossless MKV remux of video, audio and subtitle tracks.
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
+    // The 8.1.7 AAR references these classes without declaring them in its runtime metadata.
+    implementation("com.arthenica:smart-exception-java:0.2.1")
+    implementation("com.arthenica:smart-exception-common:0.2.1")
 
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("junit:junit:4.13.2")
 }
