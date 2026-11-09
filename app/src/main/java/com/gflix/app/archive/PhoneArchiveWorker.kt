@@ -112,7 +112,12 @@ class PhoneArchiveWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             .mapNotNull { it as? JsonObject }
             .filter { text(it, "text").startsWith("#EXTM3U") }
         if (streams.isEmpty()) throw IOException("DRM korumasız HLS video kaynağı bulunamadı")
-        val best = streams.maxByOrNull { text(it, "duration").toDoubleOrNull() ?: 0.0 }!!
+        // Prefer the master playlist over a single rendition: it exposes all audio languages.
+        val best = streams.maxWithOrNull(compareBy<JsonObject> {
+            text(it, "text").contains("#EXT-X-MEDIA:TYPE=AUDIO")
+        }.thenBy {
+            text(it, "duration").toDoubleOrNull() ?: 0.0
+        })!!
         val url = text(best, "url")
         requirePublicHttps(url)
         val playlists = (capture["playlists"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
