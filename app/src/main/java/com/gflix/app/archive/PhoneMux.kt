@@ -5,7 +5,7 @@ import java.io.File
 /** One video rendition and every audio/subtitle track go into the same lossless MKV. */
 object PhoneMux {
     fun arguments(input: String, headers: String, subtitles: List<File>, target: File): Array<String> {
-        val args = mutableListOf("-hide_banner", "-nostdin", "-y", "-loglevel", "warning",
+        val args = mutableListOf("-hide_banner", "-nostdin", "-y", "-loglevel", "warning", "-stats",
             "-rw_timeout", "30000000")
         if (headers.isNotEmpty()) args += listOf("-headers", headers)
         args += listOf("-i", input)

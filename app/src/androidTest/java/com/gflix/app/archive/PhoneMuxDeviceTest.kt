@@ -30,11 +30,14 @@ class PhoneMuxDeviceTest {
             val target = File(folder, "all-tracks.mkv")
             val completed = CountDownLatch(1)
             val statistics = AtomicInteger(0)
-            val session = FFmpegKit.executeWithArgumentsAsync(PhoneMux.arguments(source.absolutePath, "", listOf(sub1, sub2), target),
+            val args = PhoneMux.arguments(source.absolutePath, "", listOf(sub1, sub2), target).toMutableList()
+            // Read the fixture at playback speed to verify progress arrives repeatedly, not only at completion.
+            args.add(args.indexOf("-i"), "-re")
+            val session = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray(),
                 { completed.countDown() }, { }, { statistics.incrementAndGet() })
             assertTrue("Mux did not finish", completed.await(60, TimeUnit.SECONDS))
             assertTrue("MKV remux failed", ReturnCode.isSuccess(session.returnCode))
-            assertTrue("Statistics callback never fired", statistics.get() > 0)
+            assertTrue("Progress must update during mux, not only at completion", statistics.get() > 1)
             val info = FFprobeKit.getMediaInformation(target.absolutePath).mediaInformation
             assertNotNull(info)
             val streams = info!!.streams

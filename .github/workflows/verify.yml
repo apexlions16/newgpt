@@ -99,10 +99,13 @@ jobs:
         with:
           name: native-device-tests
           path: test-apk
-      - name: Kurulu 1.0.27 sürümünü getir
+      - name: Önceki test sürümünü getir
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download 42624907641 --repo "$GITHUB_REPOSITORY" -n gflix-next-debug-apk -D old-apk
+        run: |
+          # Keep testing the user's v27 while its artifact exists; later use the durable published APK.
+          gh run download 42624907641 --repo "$GITHUB_REPOSITORY" -n gflix-next-debug-apk -D old-apk || \
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern 'G-Flix-Next-Telefon-*.apk' --dir old-apk
       - name: KVM iznini aç
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -134,4 +137,4 @@ jobs:
           gh release create "phone-v1.0.${{ github.run_number }}" dist/*.apk \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "G-Flix Next Telefon 1.0.${{ github.run_number }}" \
-            --notes 'Telefon üzerinde sıralı arşivleme, canlı ilerleme, doğrulanmış temizlik ve aynı imzayla veri koruyan güncelleme. Android üzerinde 1.0.27 üzerine kurulum doğrulandı.'
+            --notes 'Telefon üzerinde sıralı arşivleme, canlı ilerleme, doğrulanmış temizlik ve aynı imzayla veri koruyan güncelleme. Önceki sürümün üzerine kurulum Android üzerinde doğrulandı.'
