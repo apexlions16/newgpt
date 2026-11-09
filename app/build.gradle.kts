@@ -19,7 +19,7 @@ android {
 
     defaultConfig {
         // Ayrı paket: eski G-Flix (com.gflix.app) ile aynı telefonda yan yana kurulur
-        applicationId = "com.gflix.archive"
+        applicationId = "com.gflix.archive.next"
         minSdk = 26
         targetSdk = 35
         versionCode = cfg("GFLIX_VERSION_CODE", "1").toInt()
@@ -37,7 +37,7 @@ android {
     }
 
     // Release keystore is never kept in source control. Provide all GFLIX_KEYSTORE* values in CI.
-    val signingFile = cfg("GFLIX_KEYSTORE").takeIf { it.isNotBlank() }?.let(::file)
+    val signingFile = cfg("GFLIX_KEYSTORE").takeIf { it.isNotBlank() }?.let { file(it) }
     signingConfigs {
         create("gflix") {
             signingFile?.let { storeFile = it }

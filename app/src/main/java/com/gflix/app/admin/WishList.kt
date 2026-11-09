@@ -153,7 +153,7 @@ object WishList {
         lockRun = prefs.getBoolean("lockRun", true)
         showWindow = prefs.getBoolean("showWindow", false)
         bgRun = prefs.getBoolean("bgRun", true)
-        pcShare = prefs.getBoolean("pcShare", false)
+        pcShare = prefs.getBoolean("pcShare", true)
         night = prefs.getBoolean("night", false)
         gapSec = prefs.getInt("gapSec", 20)
         cats = prefs.getString("cats", "").orEmpty().split("\n").filter { it.startsWith("http") }
@@ -751,7 +751,7 @@ object WishList {
     fun changeNight(on: Boolean) { night = on; if (::prefs.isInitialized) prefs.edit().putBoolean("night", on).apply() }
 
     // ---- 🖥️ bilgisayar da yakalasın (işler bölüşülür)
-    var pcShare by mutableStateOf(false)
+    var pcShare by mutableStateOf(true)
         private set
     fun changePcShare(on: Boolean) { pcShare = on; if (::prefs.isInitialized) prefs.edit().putBoolean("pcShare", on).apply() }
     var pcNow by mutableStateOf("")
@@ -917,6 +917,10 @@ object WishList {
             ?.let { w -> busy { scan(w) }; delay(gapSec * 1000L); return }
         // 3) sıradaki parça: listedeki SIRAYA göre (kullanıcı ↑↓ ile ayarlar)
         val (w, e) = nextUnit(items, t) ?: return
+        if (pcShare && PcServer.configured) {
+            now = "🖥️ Bilgisayarda indirme ve archive.org doğrulaması bekleniyor"
+            return
+        }
         if (e == null) busy { captureMovie(w) } else busy { captureEp(w, e) }
         delay(gapSec * 1000L)
     }
@@ -935,7 +939,7 @@ object WishList {
                 val (state, note) = st[jid] ?: ("lost" to "")
                 val lbl = label(w, e)
                 when (state) {
-                    "ok" -> { if (e != null) { e.state = "done"; e.pcJid = ""; e.note = "🖥️ bilgisayarda alındı ${hhmm(t)}" } else { w.state = "done"; w.pcJid = ""; w.note = "🖥️ bilgisayarda alındı ${hhmm(t)} · Stüdyo → Onay bekleyenler" }
+                    "ok" -> { if (e != null) { e.state = "done"; e.pcJid = ""; e.note = "☁️ archive.org'a yüklendi ${hhmm(t)}" } else { w.state = "done"; w.pcJid = ""; w.note = "☁️ archive.org'a yüklendi ${hhmm(t)}" }
                         pcNow = "🖥️ $lbl alındı" }
                     "black" -> {
                         val next = t + backoff(0)
@@ -958,12 +962,12 @@ object WishList {
         when {
             movie != null -> {
                 movie.pcJid = PcServer.pccapAdd(movie.pageUrl, hint(movie, null)); movie.state = "work"; movie.tries++
-                movie.note = "🖥️ bilgisayarda yakalanıyor"; pcNow = "🖥️ ${movie.title}: bilgisayara verildi"
+                movie.note = "🖥️ bilgisayarda indirilecek"; pcNow = "🖥️ ${movie.title}: bilgisayara verildi"
             }
             ep != null -> {
                 val (w, e) = ep
                 e.pcJid = PcServer.pccapAdd(e.url, hint(w, e)); e.state = "work"; e.tries++
-                e.note = "🖥️ bilgisayarda yakalanıyor"; pcNow = "🖥️ ${label(w, e)}: bilgisayara verildi"
+                e.note = "🖥️ bilgisayarda indirilecek"; pcNow = "🖥️ ${label(w, e)}: bilgisayara verildi"
             }
             else -> pcNow = ""
         }
@@ -1477,7 +1481,7 @@ private fun WishSettings() {
         SettingSwitch("📺 İşi bu cihaz yapsın (yakalama cihazı)",
             "Açık: sayfaları bu cihaz açar, linkleri bu cihaz yeniler (TV kutusu). Kapalı: bu cihaz sadece izler ve yönetir; iş yakalama cihazında.",
             WishList.worker) { WishList.changeWorker(it) }
-        SettingSwitch("🖥️ Bilgisayar da yakalasın", "İşler bölüşülür; bilgisayarda masaüstü açık olmalı", WishList.pcShare) { WishList.changePcShare(it) }
+        SettingSwitch("☁️ Bilgisayarda indir + archive.org'a yükle", "Video ve katalog doğrulanınca tamamlanır", WishList.pcShare) { WishList.changePcShare(it) }
         SettingSwitch("📱 Arka planda da çalışsın", "Uygulama arkadayken de dener (pil kısıtlamasını kapat ki Android durdurmasın)", WishList.bgRun) { WishList.changeBgRun(it) }
         val ctx = androidx.compose.ui.platform.LocalContext.current
         TextButton(onClick = {
